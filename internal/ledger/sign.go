@@ -14,26 +14,23 @@ import (
 	"path/filepath"
 )
 
-// keyFileName / pubFileName are the on-disk names of the ledger signing key
-// (private, 0600) and its public half (0644), stored alongside the ledger.
+// On-disk names for the signing key (private, 0600) and its public half
+// (0644), stored alongside the ledger.
 const (
 	keyFileName = "ledger.key"
 	pubFileName = "ledger.pub"
 )
 
-// Signer signs ledger record hashes with an ed25519 key, giving the audit log
-// tamper-proof (not merely tamper-evident) integrity: a third party holding the
-// public key can verify that every record was produced by the holder of the
-// private key and has not been altered.
+// Signer signs ledger record hashes with an ed25519 key so a third party
+// holding the public key can verify records were not altered.
 type Signer struct {
 	priv  ed25519.PrivateKey
 	pub   ed25519.PublicKey
 	keyID string
 }
 
-// LoadOrCreateSigner loads the ed25519 signing key from dir, generating and
-// persisting a new keypair on first use. The private key is written 0600 and
-// the public key 0644 so it can be shared for verification.
+// LoadOrCreateSigner loads the signing key from dir, generating and
+// persisting a new keypair on first use.
 func LoadOrCreateSigner(dir string) (*Signer, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("ledger: signer dir: %w", err)
@@ -68,7 +65,7 @@ func newSigner(priv ed25519.PrivateKey) *Signer {
 	return &Signer{priv: priv, pub: pub, keyID: keyID(pub)}
 }
 
-// Sign returns the base64 ed25519 signature over the record hash hexString.
+// Sign returns the base64 ed25519 signature over a record hash.
 func (s *Signer) Sign(hashHex string) string {
 	sig := ed25519.Sign(s.priv, []byte(hashHex))
 	return base64.StdEncoding.EncodeToString(sig)
@@ -77,7 +74,7 @@ func (s *Signer) Sign(hashHex string) string {
 // Public returns the signer's public key.
 func (s *Signer) Public() ed25519.PublicKey { return s.pub }
 
-// KeyID returns the short public-key fingerprint recorded on each signed event.
+// KeyID returns the short public-key fingerprint recorded on signed events.
 func (s *Signer) KeyID() string { return s.keyID }
 
 // keyID is the first 8 bytes of SHA-256(pub), hex-encoded.
@@ -103,10 +100,8 @@ func decodePub(s string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(b), nil
 }
 
-// VerifySignatures checks every signed record's ed25519 signature against pub,
-// in addition to recomputing its hash. Records without a signature are allowed
-// only when requireAll is false; when requireAll is true a missing signature is
-// an error. It returns a descriptive error for the first record that fails.
+// VerifySignatures recomputes every record's hash and checks signatures
+// against pub. When requireAll is true, an unsigned record is an error.
 func (l *Ledger) VerifySignatures(pub ed25519.PublicKey, requireAll bool) error {
 	l.mu.Lock()
 	recs, err := readAll(l.path)
@@ -117,7 +112,6 @@ func (l *Ledger) VerifySignatures(pub ed25519.PublicKey, requireAll bool) error 
 	return verifyRecords(recs, pub, requireAll)
 }
 
-// verifyRecords validates the hash chain and, using pub, the signatures.
 func verifyRecords(recs []Event, pub ed25519.PublicKey, requireAll bool) error {
 	prev := ""
 	for i, ev := range recs {
@@ -149,19 +143,17 @@ func verifyRecords(recs []Event, pub ed25519.PublicKey, requireAll bool) error {
 	return nil
 }
 
-// Bundle is a self-contained, independently-verifiable export of a session's
-// (or the whole ledger's) events plus the public key needed to check their
-// signatures. A recipient can validate a Bundle with no access to runeward via
-// [VerifyBundle]; trust in the key itself is established out of band.
+// Bundle is a self-contained export of events plus the public key needed to
+// check their signatures, verifiable with VerifyBundle. Trust in the key
+// itself is established out of band.
 type Bundle struct {
 	KeyID     string  `json:"key_id"`
 	PublicKey string  `json:"public_key"`
 	Events    []Event `json:"events"`
 }
 
-// ExportBundle writes a [Bundle] of the session's events (all events when
-// sessionID is "") signed by this ledger, embedding pub so the transcript is
-// independently verifiable.
+// ExportBundle writes a Bundle of the session's events (all events when
+// sessionID is ""), embedding pub.
 func (l *Ledger) ExportBundle(w io.Writer, sessionID string, pub ed25519.PublicKey) error {
 	l.mu.Lock()
 	recs, err := readAll(l.path)
@@ -187,14 +179,10 @@ func (l *Ledger) ExportBundle(w io.Writer, sessionID string, pub ed25519.PublicK
 	return nil
 }
 
-// VerifyBundle validates a [Bundle] read from r: it recomputes every record's
-// hash, checks chain linkage, and verifies every signature against the bundle's
-// embedded public key. It requires that every event be signed. It returns the
-// number of verified events on success.
-//
-// Note: a bundle exported from a single session is not expected to start at
-// seq 1, so VerifyBundle checks linkage between consecutive exported records
-// rather than absolute sequence position.
+// VerifyBundle validates a Bundle read from r: hashes, chain linkage, and a
+// signature on every event, checked against the embedded public key. It
+// returns the number of verified events. A session bundle need not start at
+// seq 1, so linkage is checked between consecutive records only.
 func VerifyBundle(r io.Reader) (int, error) {
 	var b Bundle
 	if err := json.NewDecoder(r).Decode(&b); err != nil {

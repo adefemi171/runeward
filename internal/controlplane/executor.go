@@ -10,8 +10,7 @@ import (
 	"github.com/adefemi171/runeward/internal/profile"
 )
 
-// ToolResult is the governed outcome of a single tool invocation returned to
-// the REST/MCP layer.
+// ToolResult is the governed outcome of a single tool invocation.
 type ToolResult struct {
 	Verdict    profile.Verdict `json:"verdict"`
 	Reason     string          `json:"reason,omitempty"`
@@ -23,7 +22,7 @@ type ToolResult struct {
 	DurationMS int64           `json:"duration_ms"`
 }
 
-// Shell runs a raw command vector in the sandbox under policy control.
+// Shell runs a command vector in the sandbox under policy control.
 func (m *Manager) Shell(ctx context.Context, id string, command []string, workdir string) (*ToolResult, error) {
 	sess, err := m.session(id)
 	if err != nil {
@@ -73,9 +72,8 @@ func (m *Manager) FileRead(ctx context.Context, id, path string) (*ToolResult, e
 	})
 }
 
-// FileWrite writes content to a file in the sandbox, creating parent
-// directories. Content is transported base64-encoded to stay binary-safe over
-// the shell.
+// FileWrite writes a file in the sandbox, creating parent directories. Content
+// travels base64-encoded to stay binary-safe over the shell.
 func (m *Manager) FileWrite(ctx context.Context, id, path, content string) (*ToolResult, error) {
 	sess, err := m.session(id)
 	if err != nil {
@@ -88,7 +86,7 @@ func (m *Manager) FileWrite(ctx context.Context, id, path, content string) (*Too
 	})
 }
 
-// FileList lists a directory (long form) in the sandbox.
+// FileList lists a directory in the sandbox.
 func (m *Manager) FileList(ctx context.Context, id, path string) (*ToolResult, error) {
 	sess, err := m.session(id)
 	if err != nil {
@@ -102,7 +100,7 @@ func (m *Manager) FileList(ctx context.Context, id, path string) (*ToolResult, e
 	})
 }
 
-// FileSearch runs a recursive text search (grep) rooted at path.
+// FileSearch runs a recursive grep rooted at path.
 func (m *Manager) FileSearch(ctx context.Context, id, query, path string) (*ToolResult, error) {
 	sess, err := m.session(id)
 	if err != nil {
@@ -116,17 +114,10 @@ func (m *Manager) FileSearch(ctx context.Context, id, query, path string) (*Tool
 	})
 }
 
-// Browser drives a headless Chromium inside the sandbox and returns the
-// rendered page. It runs through the same governed path as every other tool
-// (policy tool name "browser", arg = url), so URL allow/deny/approval rules and
-// the audit ledger apply. Because it executes inside the sandbox, the profile's
-// egress policy also constrains what the browser can reach: when an HTTP(S)
-// proxy is configured (deny-by-default profiles), it is passed to Chromium via
-// --proxy-server; strict L3 profiles enforce it transparently.
-//
-// mode is "text" (default; returns the rendered DOM HTML) or "screenshot"
-// (returns a base64-encoded PNG in Stdout). The profile's image must provide a
-// Chromium/Chrome binary.
+// Browser renders a page with headless Chromium inside the sandbox. It is
+// policy-gated as tool "browser" (arg = url), and the profile's egress proxy is
+// passed via --proxy-server so egress rules cover browser traffic too. mode is
+// "text" (rendered DOM HTML) or "screenshot" (base64 PNG in Stdout).
 func (m *Manager) Browser(ctx context.Context, id, url, mode string) (*ToolResult, error) {
 	sess, err := m.session(id)
 	if err != nil {
@@ -141,9 +132,8 @@ func (m *Manager) Browser(ctx context.Context, id, url, mode string) (*ToolResul
 	})
 }
 
-// browserScript builds the sh -c program that locates a Chromium binary and
-// renders url. It threads any HTTP(S) proxy from the session env through
-// --proxy-server so egress control also covers the browser.
+// browserScript builds the sh -c program that finds a Chromium binary and
+// renders url.
 func browserScript(url, mode string, env map[string]string) string {
 	proxy := env["HTTPS_PROXY"]
 	if proxy == "" {
@@ -153,7 +143,6 @@ func browserScript(url, mode string, env map[string]string) string {
 	if proxy != "" {
 		proxyArg = "--proxy-server=" + shQuote(proxy) + " "
 	}
-	// Common Chromium binary names across images.
 	find := `CHROME=$(command -v chromium 2>/dev/null || command -v chromium-browser 2>/dev/null || command -v google-chrome 2>/dev/null || command -v google-chrome-stable 2>/dev/null || command -v headless-shell 2>/dev/null || echo chromium)`
 	flags := `--headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --hide-scrollbars`
 	if mode == "screenshot" {
@@ -162,8 +151,7 @@ func browserScript(url, mode string, env map[string]string) string {
 	return find + `; "$CHROME" ` + flags + ` ` + proxyArg + `--dump-dom ` + shQuote(url)
 }
 
-// shQuote wraps s in single quotes, escaping embedded single quotes, for safe
-// interpolation into an `sh -c` script.
+// shQuote single-quotes s for safe interpolation into an `sh -c` script.
 func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

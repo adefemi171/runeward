@@ -1,7 +1,6 @@
 # A governed FLEET of agents: N isolated sandboxes sharing one atomic task
-# board. Each worker (agent) claims a task, runs it in its own sandbox under the
-# same policy/egress/guardrail contract, and marks it done — the "fleet of
-# agentic IDEs, sandboxed and governed" pattern.
+# board. Each worker claims a task, runs it in its own sandbox under the same
+# policy/egress/guardrail contract, and marks it done.
 #
 #   runeward --config-dir examples serve
 #   POST /v1/fleets {"profile":"agent-fleet"}

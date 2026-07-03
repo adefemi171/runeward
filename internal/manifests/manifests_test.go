@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-// TestEmbeddedManifestsLoad ensures the embed globs actually match files.
 func TestEmbeddedManifestsLoad(t *testing.T) {
 	crds, err := CRDs()
 	if err != nil {
@@ -24,8 +23,7 @@ func TestEmbeddedManifestsLoad(t *testing.T) {
 	}
 }
 
-// TestCRDCopiesInSync guards against drift between the embedded canonical CRDs
-// (used by `runeward up`) and the copies shipped for kubectl/GitOps and Helm.
+// Guards against drift between the embedded CRDs and the deploy/ copies.
 func TestCRDCopiesInSync(t *testing.T) {
 	for _, name := range []string{
 		"runeward.dev_sandboxes.yaml",

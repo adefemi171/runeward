@@ -102,8 +102,6 @@ func (s *Server) handleBrowser(w http.ResponseWriter, r *http.Request) {
 	writeToolResult(w, res, err)
 }
 
-// handleBrowserOpen starts a stateful, CDP-driven browser session in the
-// sandbox and returns its session id.
 func (s *Server) handleBrowserOpen(w http.ResponseWriter, r *http.Request) {
 	sid, res, err := s.mgr.BrowserOpen(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -117,8 +115,6 @@ func (s *Server) handleBrowserOpen(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"session_id": sid})
 }
 
-// handleBrowserAct sends one action (navigate/eval/text/html/screenshot/click/
-// type/wait/title/url) to a live browser session.
 func (s *Server) handleBrowserAct(w http.ResponseWriter, r *http.Request) {
 	var cmd browser.Command
 	if err := decodeJSON(r, &cmd); err != nil {
@@ -129,7 +125,6 @@ func (s *Server) handleBrowserAct(w http.ResponseWriter, r *http.Request) {
 	writeToolResult(w, res, err)
 }
 
-// handleBrowserClose shuts down a live browser session.
 func (s *Server) handleBrowserClose(w http.ResponseWriter, r *http.Request) {
 	if err := s.mgr.BrowserClose(r.Context(), r.PathValue("id"), r.PathValue("sid")); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -298,7 +293,6 @@ func (s *Server) handleAuditVerify(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "signed": s.mgr.Signed()})
 }
 
-// handleAuditPubKey returns the ledger's signing public key (base64) and key id.
 func (s *Server) handleAuditPubKey(w http.ResponseWriter, r *http.Request) {
 	pub, keyID := s.mgr.LedgerPublicKey()
 	if pub == "" {
@@ -308,8 +302,8 @@ func (s *Server) handleAuditPubKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"signed": true, "public_key": pub, "key_id": keyID})
 }
 
-// handleAuditExport streams a self-contained, independently-verifiable
-// transcript bundle. An optional ?session=<id> narrows it to one session.
+// handleAuditExport streams a verifiable transcript bundle; ?session=<id>
+// narrows it to one session.
 func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 	session := r.URL.Query().Get("session")
 	w.Header().Set("Content-Type", "application/json")
@@ -343,8 +337,8 @@ func decodeCode(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return req.Code, true
 }
 
-// writeToolResult renders a governed ToolResult with the right HTTP status:
-// 403 for deny, 202 for a pending approval, 200 otherwise.
+// writeToolResult maps a ToolResult to HTTP status: 403 deny, 202 pending
+// approval, 200 otherwise.
 func writeToolResult(w http.ResponseWriter, res *controlplane.ToolResult, err error) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -360,8 +354,8 @@ func writeToolResult(w http.ResponseWriter, res *controlplane.ToolResult, err er
 	}
 }
 
-// writeIfBlocked handles the error / deny / pending cases shared by the file
-// endpoints, returning true when it has written a response.
+// writeIfBlocked handles the error/deny/pending cases shared by the file
+// endpoints; it returns true when it has written a response.
 func writeIfBlocked(w http.ResponseWriter, res *controlplane.ToolResult, err error) bool {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

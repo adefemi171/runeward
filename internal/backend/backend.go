@@ -1,6 +1,5 @@
-// Package backend abstracts the sandbox runtime so everything above it (agent,
-// ledger, policy engine, REST, MCP, dashboard) is identical whether a sandbox
-// is a Docker container or a Kubernetes Pod.
+// Package backend abstracts the sandbox runtime so callers don't care whether
+// a sandbox is a Docker container or a Kubernetes Pod.
 package backend
 
 import (
@@ -16,8 +15,7 @@ type Backend interface {
 	// Name identifies the backend implementation (e.g. "docker", "k8s").
 	Name() string
 
-	// Create provisions a new sandbox from the resolved spec and returns its
-	// handle once it is ready to accept exec calls.
+	// Create provisions a new sandbox and returns its handle once it accepts exec calls.
 	Create(ctx context.Context, spec Spec) (*Sandbox, error)
 
 	// Exec runs a one-shot command in the sandbox and returns its result.
@@ -29,8 +27,7 @@ type Backend interface {
 	// CopyFiles projects files into the running sandbox.
 	CopyFiles(ctx context.Context, id string, files []profile.File) error
 
-	// ExportWorkspace streams a tar of the sandbox workspace (the workdir
-	// contents) to w. It reads the sandbox only; nothing is modified.
+	// ExportWorkspace streams a tar of the workdir contents to w without modifying the sandbox.
 	ExportWorkspace(ctx context.Context, id string, w io.Writer) error
 
 	// Snapshot captures the sandbox workspace and returns a reference.
@@ -47,26 +44,19 @@ type Backend interface {
 }
 
 // Spec is the resolved, backend-agnostic description of a sandbox to create.
-// It is derived from a profile by the control plane.
 type Spec struct {
-	// Profile is the name the sandbox was created from (for labelling/audit).
 	Profile string
 	Image   string
 	Workdir string
 	User    string
-	// Env holds already-resolved (name, value) pairs. Secret resolution
-	// happens before this point; values here are literal.
-	Env map[string]string
-	// Labels are attached to the sandbox for discovery and audit correlation.
+	// Env values are already-resolved literals; secret resolution happens earlier.
+	Env    map[string]string
 	Labels map[string]string
-	// Files to project at creation time.
-	Files []profile.File
-	// SeedDir, when set, is a local directory whose contents are copied into
-	// the workspace at creation (read-only source; a copy, never a mount).
-	SeedDir string
-	// Network is the resolved egress policy driving proxy/NetworkPolicy setup.
-	Network profile.Network
-	// Resources are best-effort cpu/memory caps.
+	Files  []profile.File
+	// SeedDir is a local directory copied into the workspace at creation
+	// (a copy, never a mount; the source is only read).
+	SeedDir   string
+	Network   profile.Network
 	Resources Resources
 	// RuntimeClass maps to k8s runtimeClassName; ignored by the docker backend.
 	RuntimeClass string
@@ -74,9 +64,8 @@ type Spec struct {
 
 // Resources are best-effort resource caps applied to the sandbox.
 type Resources struct {
-	// NanoCPUs is CPU quota in units of 1e-9 CPUs (e.g. 1.5 CPUs = 1_500_000_000).
-	NanoCPUs int64
-	// MemoryBytes is the hard memory limit in bytes.
+	// NanoCPUs is in units of 1e-9 CPUs (1.5 CPUs = 1_500_000_000).
+	NanoCPUs    int64
 	MemoryBytes int64
 }
 
@@ -88,8 +77,7 @@ type Sandbox struct {
 	Image     string
 	Status    string
 	CreatedAt time.Time
-	// Endpoint is the reachable address of the in-pod agent, when running.
-	Endpoint string
+	Endpoint  string
 }
 
 // ExecRequest is a one-shot command execution.
@@ -113,9 +101,8 @@ type PTYStream struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
-	// TTY requests a pseudo-terminal be allocated.
-	TTY bool
-	// Command is the process to start (defaults to an interactive shell).
+	TTY    bool
+	// Command defaults to an interactive shell when empty.
 	Command []string
 	// Resize delivers terminal size changes; may be nil.
 	Resize <-chan TermSize
@@ -133,7 +120,7 @@ type SnapshotRef struct {
 	Name    string `json:"name"`
 	Profile string `json:"profile"`
 	Backend string `json:"backend"`
-	// Location is a backend-specific handle (e.g. a tarball path).
+	// Location is backend-specific (e.g. a tarball path).
 	Location string    `json:"location"`
 	Created  time.Time `json:"created"`
 }

@@ -9,17 +9,15 @@ import (
 	"github.com/adefemi171/runeward/internal/profile"
 )
 
-// Fleet is a set of governed sandboxes provisioned from one profile that share a
-// single atomic task board. External workers (agents) claim tasks from the board
-// and execute them against their assigned sandbox via the governed tool API.
+// Fleet is a set of sandboxes from one profile sharing an atomic task board.
 type Fleet struct {
 	ID        string
 	Profile   string
 	Board     *fleet.Board
 	Sandboxes []string
 	Created   time.Time
-	// restored is true for fleets loaded from disk on startup; their sandboxes
-	// were not recreated, but the task board state survives.
+	// restored marks fleets loaded from disk; the board survives but the
+	// sandboxes were not recreated.
 	restored bool
 }
 
@@ -42,8 +40,8 @@ func (f *Fleet) view() FleetView {
 	}
 }
 
-// CreateFleet provisions the profile's fleet: `replicas` governed sandboxes
-// sharing a task board seeded from the profile's task_board list.
+// CreateFleet provisions the profile's replicas with a shared task board seeded
+// from its task_board list.
 func (m *Manager) CreateFleet(ctx context.Context, profileName string) (*FleetView, error) {
 	p, err := profile.Load(profileName, profile.Options{ConfigDir: m.configDir})
 	if err != nil {
@@ -70,7 +68,7 @@ func (m *Manager) CreateFleet(ctx context.Context, profileName string) (*FleetVi
 	for i := 0; i < replicas; i++ {
 		sb, err := m.CreateSandbox(ctx, profileName, CreateOptions{})
 		if err != nil {
-			// Best-effort teardown of any sandboxes already created.
+			// Best-effort teardown of anything already created.
 			for _, id := range f.Sandboxes {
 				_ = m.KillSandbox(context.Background(), id)
 			}
@@ -149,8 +147,8 @@ func (m *Manager) ClaimTask(fleetID, owner string) (fleet.Task, bool, error) {
 	return t, claimed, nil
 }
 
-// HeartbeatTask extends the lease on a task a worker still holds, preventing the
-// sweeper from requeuing it. Returns the refreshed task.
+// HeartbeatTask extends a worker's lease on a task so the sweeper won't
+// requeue it.
 func (m *Manager) HeartbeatTask(fleetID, taskID, owner string) (fleet.Task, error) {
 	f, ok := m.fleet(fleetID)
 	if !ok {

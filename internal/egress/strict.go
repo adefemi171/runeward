@@ -1,16 +1,13 @@
 package egress
 
-// Constants shared by the strict (L3) egress enforcement path between the
-// Kubernetes backend (which builds the pod spec) and the runeward-egress
-// binary (which sets up iptables and runs the transparent proxy).
+// Constants shared between the Kubernetes backend and the runeward-egress
+// binary for strict (L3) enforcement.
 const (
-	// StrictProxyUID is the uid the transparent proxy container runs as. The
-	// iptables rules exempt this uid so the proxy's own upstream connections
-	// are not redirected back to itself. The sandbox container must run as a
-	// different uid for its traffic to be intercepted.
+	// StrictProxyUID is the uid the transparent proxy runs as; iptables
+	// exempts it so the proxy's upstream traffic isn't redirected back to
+	// itself. The sandbox must run as a different uid to be intercepted.
 	StrictProxyUID = 1337
 
-	// StrictRedirectPort is the local port the transparent proxy listens on
-	// and the iptables REDIRECT target.
+	// StrictRedirectPort is the proxy's listen port and the iptables REDIRECT target.
 	StrictRedirectPort = 15001
 )

@@ -160,9 +160,7 @@ body {
   border-bottom: 1px solid var(--border-soft);
   align-items: center;
 }
-/* Let the profile dropdown shrink to the sidebar width instead of expanding to
-   its longest option and pushing the New button out of the sidebar (where the
-   panel would overlap it and swallow clicks). */
+/* Let the dropdown shrink to the sidebar width; otherwise it pushes the New button out where the panel swallows its clicks. */
 .new-sandbox .select { flex: 1; min-width: 0; }
 .new-sandbox .btn { flex-shrink: 0; }
 

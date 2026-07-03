@@ -1,8 +1,7 @@
-// Package server exposes runeward's control plane over HTTP: a REST API for
-// sandbox lifecycle and governed tool calls, an approval inbox, audit
-// endpoints, an interactive terminal WebSocket, and (optionally) the embedded
-// web dashboard. Every tool call is routed through [controlplane.Manager] so
-// policy, guardrails, and the audit ledger are always enforced.
+// Package server exposes the control plane over HTTP: sandbox lifecycle,
+// governed tool calls, approvals, audit endpoints, a terminal WebSocket, and
+// optionally the web dashboard. Every tool call goes through
+// controlplane.Manager, so governance is always enforced.
 package server
 
 import (
@@ -12,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/adefemi171/runeward/internal/controlplane"
@@ -25,13 +25,12 @@ type Server struct {
 	logger    *log.Logger
 	upgrader  websocket.Upgrader
 
-	// MCP, when set, is mounted at /mcp to serve the streamable-HTTP MCP
-	// transport alongside the REST API.
+	// MCP, when set, is mounted at /mcp alongside the REST API.
 	MCP http.Handler
 }
 
-// New builds a Server over mgr. dashboard, when non-nil, is mounted at "/" to
-// serve the web UI; logger may be nil (defaults to the standard logger).
+// New builds a Server over mgr. dashboard, when non-nil, is mounted at "/";
+// logger may be nil.
 func New(mgr *controlplane.Manager, dashboard http.Handler, logger *log.Logger) *Server {
 	if logger == nil {
 		logger = log.Default()
@@ -40,15 +39,27 @@ func New(mgr *controlplane.Manager, dashboard http.Handler, logger *log.Logger) 
 		mgr:       mgr,
 		dashboard: dashboard,
 		logger:    logger,
-		upgrader: websocket.Upgrader{
-			// The dashboard is served same-origin; allow any origin so the API
-			// is also usable from local tooling.
-			CheckOrigin: func(*http.Request) bool { return true },
-		},
+		upgrader:  websocket.Upgrader{CheckOrigin: sameOrigin},
 	}
 }
 
-// Handler builds the routed http.Handler for the control plane.
+// sameOrigin guards the terminal WebSocket against cross-site hijacking: a
+// browser tab on another site must not be able to open a shell into a sandbox.
+// Requests with no Origin (native tooling like curl/websocat) are allowed;
+// browser requests must carry an Origin whose host matches the Host header.
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return u.Host == r.Host
+}
+
+// Handler returns the routed http.Handler for the control plane.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -132,8 +143,6 @@ func (s *Server) ListenAndServe(addr string) error {
 	return srv.ListenAndServe()
 }
 
-// --- JSON helpers ---
-
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -151,7 +160,7 @@ func decodeJSON(r *http.Request, v any) error {
 	return dec.Decode(v)
 }
 
-// logRequests is a tiny access-log middleware.
+// logRequests is a minimal access-log middleware.
 func logRequests(logger *log.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -178,8 +187,8 @@ func (w *statusWriter) WriteHeader(code int) {
 // Unwrap exposes the underlying ResponseWriter to http.ResponseController.
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// Hijack lets the WebSocket upgrader take over the connection even though the
-// access-log middleware has wrapped the ResponseWriter.
+// Hijack lets the WebSocket upgrader take over the connection despite the
+// access-log wrapper.
 func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	hj, ok := w.ResponseWriter.(http.Hijacker)
 	if !ok {

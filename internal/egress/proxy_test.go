@@ -12,9 +12,8 @@ import (
 	"testing"
 )
 
-// startTargetListener spins up a raw TCP listener that, on the first
-// connection, reads one line from the client and echoes back a fixed reply.
-// It returns the listener's host:port and a cleanup function.
+// startTargetListener starts a raw TCP listener that reads one line and
+// writes back a fixed reply.
 func startTargetListener(t *testing.T, reply string) (string, func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -34,7 +33,6 @@ func startTargetListener(t *testing.T, reply string) (string, func()) {
 	return ln.Addr().String(), func() { ln.Close() }
 }
 
-// newProxyServer starts the proxy behind an httptest server.
 func newProxyServer(t *testing.T, p *Proxy) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(p.Handler())
@@ -80,7 +78,7 @@ func TestConnectAllowed(t *testing.T) {
 		}
 	}
 
-	// Now the connection is a raw tunnel to the target; verify bytes flow.
+	// The connection is now a raw tunnel; verify bytes flow.
 	fmt.Fprintf(conn, "ping\n")
 	got, err := br.ReadString('\n')
 	if err != nil {
@@ -117,7 +115,6 @@ func TestHTTPDenied(t *testing.T) {
 	p := &Proxy{Policy: Policy{Default: "deny"}}
 	srv := newProxyServer(t, p)
 
-	// Send a plain forward-proxy request (absolute URI) to a denied host.
 	proxyURL, _ := url.Parse(srv.URL)
 	client := &http.Client{
 		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
@@ -133,7 +130,6 @@ func TestHTTPDenied(t *testing.T) {
 }
 
 func TestHTTPAllowedForwards(t *testing.T) {
-	// Origin server the proxy will forward to.
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "hello-from-origin")
 	}))

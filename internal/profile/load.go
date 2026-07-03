@@ -14,34 +14,30 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// ErrNotFound is returned when a profile name cannot be resolved on the search
-// path.
+// ErrNotFound is returned when a profile name cannot be resolved.
 var ErrNotFound = errors.New("profile not found")
 
-// profileExts are the supported profile file extensions, in resolution order.
-// When multiple files share a name in the same directory, the earliest
-// extension here wins (e.g. foo.toml shadows foo.yaml).
+// profileExts is in resolution order: within a directory the earliest
+// extension wins, so foo.toml shadows foo.yaml.
 var profileExts = []string{".toml", ".yaml", ".yml", ".json"}
 
 // Options controls where profiles are resolved from.
 type Options struct {
-	// ConfigDir, when set (via --config-dir or $RUNEWARD_CONFIG_DIR), pins the
-	// search to a single directory instead of the default tiers.
+	// ConfigDir, when set, pins the search to a single directory.
 	ConfigDir string
-	// WorkingDir is the directory used to resolve project-local profiles.
-	// Defaults to the process working directory.
+	// WorkingDir resolves project-local profiles; defaults to the process cwd.
 	WorkingDir string
 }
 
-// Load resolves and parses the named profile. Profiles may be authored in
-// TOML, YAML, or JSON; the extension selects the parser.
+// Load resolves and parses the named profile; the file extension selects the
+// parser.
 //
-// Resolution order (first match wins), mirroring the design lineage:
-//  1. <workingdir>/.runeward/<name>.{toml,yaml,yml,json}   (project-local)
-//  2. $XDG_CONFIG_HOME/runeward/<name>.{...} or ~/.config/runeward/<name>.{...}
+// Resolution order (first match wins):
+//  1. <workingdir>/.runeward/<name>.{toml,yaml,yml,json}
+//  2. $XDG_CONFIG_HOME/runeward/... or ~/.config/runeward/...
 //
-// Within a single directory, extensions are tried in profileExts order, so a
-// <name>.toml shadows a <name>.yaml. If Options.ConfigDir is set, only that
+// Within a directory, extensions are tried in profileExts order, so
+// <name>.toml shadows <name>.yaml. If Options.ConfigDir is set, only that
 // directory is consulted.
 func Load(name string, opts Options) (*Profile, error) {
 	if err := validateName(name); err != nil {
@@ -58,8 +54,8 @@ func Load(name string, opts Options) (*Profile, error) {
 	return nil, fmt.Errorf("%w: %q (searched %s)", ErrNotFound, name, strings.Join(searchDirs(opts), ", "))
 }
 
-// List returns the names of all profiles reachable on the search path, grouped
-// and de-duplicated with earlier tiers shadowing later ones.
+// List returns the names of all profiles on the search path, de-duplicated
+// with earlier tiers shadowing later ones.
 func List(opts Options) ([]string, error) {
 	seen := map[string]struct{}{}
 	var names []string
@@ -129,10 +125,9 @@ func parseFile(path, name string) (*Profile, error) {
 			return nil, fmt.Errorf("parse profile %q: %w", path, err)
 		}
 	default:
-		// .yaml/.yml/.json — sigs.k8s.io/yaml converts YAML to JSON and decodes
-		// via the `json` struct tags (JSON is valid YAML, so this path also
-		// handles .json). Strict mode rejects unknown/duplicate fields, matching
-		// the TOML DisallowUnknownFields behavior.
+		// sigs.k8s.io/yaml decodes via the json tags and handles .json too
+		// (JSON is valid YAML). Strict mode rejects unknown fields, matching
+		// TOML's DisallowUnknownFields.
 		if err := yaml.UnmarshalStrict(data, &p); err != nil {
 			return nil, fmt.Errorf("parse profile %q: %w", path, err)
 		}

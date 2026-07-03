@@ -1,13 +1,7 @@
-// Package controlplane is runeward's governed execution core. It ties the
-// pluggable backend (Docker/Kubernetes) together with the authority engine, the
-// cost/loop guardrails, and the tamper-evident audit ledger so that every tool
-// invocation flows through a single governed path:
-//
-//	policy.Evaluate -> (approval gate) -> guard.CheckExec -> backend.Exec ->
-//	guard.RecordOutcome -> ledger.Append
-//
-// The [Manager] owns sandbox sessions and the shared ledger; the REST server
-// and MCP server are thin adapters over its methods.
+// Package controlplane is runeward's governed execution core. Every tool call
+// runs through one path: policy, approval gate, guardrails, backend exec, audit
+// ledger. The Manager owns sandbox sessions and the shared ledger; the REST and
+// MCP servers are thin adapters over it.
 package controlplane
 
 import (
@@ -38,8 +32,8 @@ type Manager struct {
 	signer    *ledger.Signer
 	approvals *ApprovalStore
 
-	// approvalWait bounds how long a require-approval tool call blocks waiting
-	// for an operator before the REST layer returns a pending (202) response.
+	// approvalWait bounds how long a require-approval call blocks before the
+	// REST layer returns 202 pending.
 	approvalWait time.Duration
 
 	mu       sync.Mutex
@@ -51,11 +45,8 @@ type Manager struct {
 	fleetMu sync.Mutex
 	fleets  map[string]*Fleet
 
-	// stateDir is where the ledger, keys, and fleets.json live. fleetLease is
-	// the claim lease used for dead-worker recovery. The sweeper goroutine
-	// requeues expired claims on an interval.
-	stateDir   string
-	fleetLease time.Duration
+	stateDir   string        // ledger, keys, fleets.json
+	fleetLease time.Duration // claim lease for dead-worker recovery
 	sweepStop  chan struct{}
 	sweepDone  chan struct{}
 }
@@ -71,17 +62,15 @@ type Session struct {
 	Env     map[string]string
 	Workdir string
 
-	// secrets holds the resolved values of secret-sourced env vars so they can
-	// be redacted out of ledger payloads.
+	// secrets are resolved secret env values, kept so they can be redacted
+	// from ledger payloads.
 	secrets []string
 
-	// browserMu guards browsers, the set of live in-sandbox CDP browser
-	// sessions (keyed by session id) started via BrowserOpen.
 	browserMu sync.Mutex
-	browsers  map[string]*browserSession
+	browsers  map[string]*browserSession // live CDP sessions, keyed by session id
 }
 
-// New constructs a Manager, opening (creating) the shared audit ledger.
+// New constructs a Manager and opens the shared audit ledger.
 func New(configDir string) (*Manager, error) {
 	path, err := defaultLedgerPath()
 	if err != nil {
@@ -92,9 +81,7 @@ func New(configDir string) (*Manager, error) {
 		return nil, err
 	}
 
-	// The ledger is signed by default (ed25519) so the audit trail is
-	// tamper-proof and exportable transcripts are independently verifiable.
-	// Set RUNEWARD_LEDGER_SIGN=off to disable.
+	// Signing is on by default; RUNEWARD_LEDGER_SIGN=off disables it.
 	var signer *ledger.Signer
 	if !strings.EqualFold(os.Getenv("RUNEWARD_LEDGER_SIGN"), "off") {
 		s, err := ledger.LoadOrCreateSigner(filepath.Dir(path))
@@ -124,8 +111,7 @@ func New(configDir string) (*Manager, error) {
 	return m, nil
 }
 
-// fleetLeaseFromEnv reads the fleet claim lease from $RUNEWARD_FLEET_LEASE
-// (a duration like "2m"), defaulting to 2 minutes. "0" or "off" disables leases.
+// fleetLeaseFromEnv reads $RUNEWARD_FLEET_LEASE (default 2m; "0"/"off" disables).
 func fleetLeaseFromEnv() time.Duration {
 	v := os.Getenv("RUNEWARD_FLEET_LEASE")
 	switch strings.ToLower(strings.TrimSpace(v)) {
@@ -143,7 +129,7 @@ func fleetLeaseFromEnv() time.Duration {
 // Signed reports whether the ledger is being signed.
 func (m *Manager) Signed() bool { return m.signer != nil }
 
-// recordFleet appends a fleet-level audit event (not tied to a sandbox session).
+// recordFleet appends a fleet-level audit event.
 func (m *Manager) recordFleet(f *Fleet, action, taskID, reason string) {
 	ev := ledger.Event{
 		SessionID: "fleet:" + f.ID,
@@ -161,8 +147,8 @@ func (m *Manager) recordFleet(f *Fleet, action, taskID, reason string) {
 	_, _ = m.ledger.Append(ev)
 }
 
-// LedgerPublicKey returns the base64 public key + short key id used to sign the
-// ledger, or empty strings when signing is disabled.
+// LedgerPublicKey returns the base64 signing key and key id, or empty strings
+// when signing is disabled.
 func (m *Manager) LedgerPublicKey() (pub string, keyID string) {
 	if m.signer == nil {
 		return "", ""
@@ -170,9 +156,8 @@ func (m *Manager) LedgerPublicKey() (pub string, keyID string) {
 	return base64.StdEncoding.EncodeToString(m.signer.Public()), m.signer.KeyID()
 }
 
-// ExportBundle writes a self-contained, independently-verifiable transcript of a
-// session's audit events (all events when sessionID is "") to w. It fails when
-// signing is disabled.
+// ExportBundle writes a verifiable transcript of a session's audit events (all
+// events when sessionID is "") to w. Fails when signing is disabled.
 func (m *Manager) ExportBundle(w io.Writer, sessionID string) error {
 	if m.signer == nil {
 		return fmt.Errorf("ledger signing is disabled; no verifiable transcript to export")
@@ -180,8 +165,7 @@ func (m *Manager) ExportBundle(w io.Writer, sessionID string) error {
 	return m.ledger.ExportBundle(w, sessionID, m.signer.Public())
 }
 
-// VerifyLedger checks the ledger's hash chain and, when signing is enabled,
-// every record's signature.
+// VerifyLedger checks the hash chain and, when signing is enabled, signatures.
 func (m *Manager) VerifyLedger() error {
 	if m.signer != nil {
 		return m.ledger.VerifySignatures(m.signer.Public(), false)
@@ -195,10 +179,10 @@ func (m *Manager) Close() error {
 	return m.ledger.Close()
 }
 
-// Ledger exposes the shared ledger for read-only audit endpoints.
+// Ledger returns the shared ledger.
 func (m *Manager) Ledger() *ledger.Ledger { return m.ledger }
 
-// Approvals exposes the approval store for the approvals API.
+// Approvals returns the approval store.
 func (m *Manager) Approvals() *ApprovalStore { return m.approvals }
 
 // ProfileInfo is a lightweight profile descriptor for listing.
@@ -232,16 +216,13 @@ func (m *Manager) ListProfiles() ([]ProfileInfo, error) {
 
 // CreateOptions carries per-create overrides that are not part of the profile.
 type CreateOptions struct {
-	// CopyFrom, when non-empty, overrides the profile's host.copy_from for this
-	// sandbox only: the directory's contents are copied into the fresh
-	// workspace at creation (a one-time copy; the host directory is never
-	// mounted or modified). A leading "~/" is expanded.
+	// CopyFrom overrides host.copy_from for this create: a one-time copy into
+	// the fresh workspace, the host dir is never mounted. "~/" is expanded.
 	CopyFrom string
 }
 
 // CreateSandbox loads the named profile, provisions a sandbox on its backend,
-// and registers a governed session for it. opts may override profile settings
-// for this single create (e.g. the workspace seed directory).
+// and registers a governed session for it.
 func (m *Manager) CreateSandbox(ctx context.Context, profileName string, opts CreateOptions) (*backend.Sandbox, error) {
 	p, err := profile.Load(profileName, profile.Options{ConfigDir: m.configDir})
 	if err != nil {
@@ -331,9 +312,8 @@ func (m *Manager) KillSandbox(ctx context.Context, id string) error {
 	return sess.Backend.Kill(ctx, id)
 }
 
-// AttachTerminal wires an interactive PTY (typically a dashboard WebSocket) to
-// the sandbox. The interactive terminal is a human-operated surface and is not
-// policy-gated per keystroke, but the attach is recorded in the audit ledger.
+// AttachTerminal wires an interactive PTY to the sandbox. Terminals are not
+// policy-gated per keystroke, but the attach itself is audited.
 func (m *Manager) AttachTerminal(ctx context.Context, id string, stream backend.PTYStream) error {
 	sess, err := m.session(id)
 	if err != nil {
@@ -343,7 +323,6 @@ func (m *Manager) AttachTerminal(ctx context.Context, id string, stream backend.
 	return sess.Backend.AttachPTY(ctx, id, stream)
 }
 
-// session looks up a governed session by id.
 func (m *Manager) session(id string) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -354,9 +333,8 @@ func (m *Manager) session(id string) (*Session, error) {
 	return s, nil
 }
 
-// govern runs a single action through the full governed path and returns a
-// [ToolResult]. run performs the actual backend side effect and is only invoked
-// once the action is authorized and within guardrails.
+// govern runs one action through the governed path. run is only invoked once
+// the action is authorized and within guardrails.
 func (m *Manager) govern(ctx context.Context, sess *Session, tool, arg string, args []string, run func(context.Context) (*backend.ExecResult, error)) (*ToolResult, error) {
 	dec := sess.Engine.Evaluate(policy.Action{Tool: tool, Arg: arg})
 
@@ -383,14 +361,13 @@ func (m *Manager) govern(ctx context.Context, sess *Session, tool, arg string, a
 				m.record(sess, tool, arg, args, string(profile.VerdictDeny), -1, 0, "denied by approver")
 				return &ToolResult{Verdict: profile.VerdictDeny, Reason: "denied by approver", ApprovalID: ap.ID}, nil
 			}
-			// approved: fall through to guardrails + execution.
+			// Approved: fall through to guardrails + execution.
 		case <-wait.Done():
 			m.approvals.forget(ap.ID)
 			return &ToolResult{Verdict: profile.VerdictRequireApprove, Pending: true, ApprovalID: ap.ID, Reason: reason}, nil
 		}
 	}
 
-	// Authorized (allow, or approved). Enforce guardrails.
 	if err := sess.Guard.CheckExec(); err != nil {
 		m.record(sess, tool, arg, args, string(profile.VerdictDeny), -1, 0, err.Error())
 		return &ToolResult{Verdict: profile.VerdictDeny, Reason: err.Error()}, nil
@@ -415,8 +392,7 @@ func (m *Manager) govern(ctx context.Context, sess *Session, tool, arg string, a
 	}, nil
 }
 
-// record appends an event to the ledger, redacting secret values when the
-// profile's audit redaction is enabled and there are secrets to redact.
+// record appends an event to the ledger.
 func (m *Manager) record(sess *Session, tool, action string, args []string, verdict string, exit int, durMS int64, reason string) {
 	ev := ledger.Event{
 		SessionID:  sess.Sandbox.ID,
@@ -432,18 +408,16 @@ func (m *Manager) record(sess *Session, tool, action string, args []string, verd
 	if reason != "" {
 		ev.Meta = map[string]string{"reason": reason}
 	}
-	// Only redact when there are known secret values; calling ledger.Redact
-	// with no sensitive values hashes the entire payload, which would make the
-	// audit trail unreadable for non-secret commands.
+	// Only redact when there are known secrets: ledger.Redact with no values
+	// hashes the whole payload, making the trail unreadable.
 	if sess.Profile.Audit.RedactEnabled() && len(sess.secrets) > 0 {
 		ev = ledger.Redact(ev, sess.secrets...)
 	}
 	_, _ = m.ledger.Append(ev)
 }
 
-// defaultLedgerPath returns the shared ledger file location. It honors
-// $RUNEWARD_STATE_DIR when set, otherwise falls back to the user cache dir,
-// creating the parent directory in either case.
+// defaultLedgerPath returns the ledger file location, honoring
+// $RUNEWARD_STATE_DIR and falling back to the user cache dir.
 func defaultLedgerPath() (string, error) {
 	dir := os.Getenv("RUNEWARD_STATE_DIR")
 	if dir == "" {
@@ -459,8 +433,8 @@ func defaultLedgerPath() (string, error) {
 	return filepath.Join(dir, "ledger.jsonl"), nil
 }
 
-// resolveEnv turns a profile's [[env]] entries into literal name=value pairs and
-// returns the resolved values of secret-sourced entries for redaction.
+// resolveEnv turns a profile's [[env]] entries into literal values and returns
+// the resolved secret values for redaction.
 func resolveEnv(p *profile.Profile) (map[string]string, []string) {
 	out := make(map[string]string, len(p.Env))
 	var secrets []string
@@ -497,8 +471,7 @@ func expandHome(p string) string {
 	return p
 }
 
-// newEngine builds the authority engine for a profile (default: allow). It
-// selects the Rego engine or the CEL engine when the profile requests one,
+// newEngine builds the policy engine for a profile: Rego or CEL when requested,
 // otherwise the built-in first-match glob engine.
 func newEngine(p *profile.Profile) (policy.Evaluator, error) {
 	switch {
@@ -521,13 +494,11 @@ func newEngine(p *profile.Profile) (policy.Evaluator, error) {
 	}
 }
 
-// bundlePullTimeout bounds how long pulling a policy bundle from a registry may
-// take before sandbox creation fails.
 const bundlePullTimeout = 30 * time.Second
 
-// newBundleEngine pulls the profile's signed OCI policy bundle and builds the
-// authority engine from it. When a verify key is configured the bundle's
-// ed25519 signature is required and checked before its policy is trusted.
+// newBundleEngine pulls the profile's OCI policy bundle and builds the engine
+// from it. With a verify key configured, the bundle's ed25519 signature is
+// required before its policy is trusted.
 func newBundleEngine(p *profile.Profile) (policy.Evaluator, error) {
 	pb := p.PolicyBundle
 	var verify ed25519.PublicKey

@@ -148,7 +148,6 @@ func TestEvaluateWildcardTool(t *testing.T) {
 		}
 	}
 
-	// Wildcard tool but arg does not match -> default.
 	d := e.Evaluate(Action{Tool: "shell", Arg: "cat readme"})
 	if d.Verdict != profile.VerdictAllow {
 		t.Errorf("non-matching arg should fall to default allow, got %q", d.Verdict)
@@ -165,7 +164,6 @@ func TestEvaluateEmptyMatchMatchesAll(t *testing.T) {
 	if d.Verdict != profile.VerdictRequireApprove {
 		t.Errorf("empty match should match all args, got %q", d.Verdict)
 	}
-	// Tool must still match.
 	d = e.Evaluate(Action{Tool: "shell", Arg: "ls"})
 	if d.Verdict != profile.VerdictAllow {
 		t.Errorf("tool mismatch should fall to default, got %q", d.Verdict)

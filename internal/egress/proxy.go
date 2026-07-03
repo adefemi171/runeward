@@ -8,33 +8,26 @@ import (
 	"time"
 )
 
-// dialTimeout bounds how long the proxy waits when dialing an origin or
-// CONNECT target.
+// dialTimeout bounds dials to origins and CONNECT targets.
 const dialTimeout = 30 * time.Second
 
-// Proxy is a deny-by-default forward proxy that enforces Policy on both
-// HTTP CONNECT tunnels (used for HTTPS) and plain absolute-URI HTTP
-// requests. The zero value is not usable; construct one with a Policy.
+// Proxy is a forward proxy that enforces Policy on CONNECT tunnels (HTTPS)
+// and plain absolute-URI HTTP requests.
 type Proxy struct {
-	// Policy decides which destinations are reachable.
 	Policy Policy
-	// Logger receives allow/deny decisions. If nil, logging is discarded.
+	// Logger receives allow/deny decisions; nil discards them.
 	Logger *log.Logger
-	// transport forwards plain HTTP requests. If nil, a default transport
-	// is used lazily via forwardHTTP.
+	// transport forwards plain HTTP requests; nil falls back to the default.
 	transport http.RoundTripper
 }
 
-// logf logs a decision, discarding output when Logger is nil.
 func (p *Proxy) logf(format string, args ...any) {
 	if p.Logger != nil {
 		p.Logger.Printf(format, args...)
 	}
 }
 
-// Handler returns an [http.Handler] implementing the forward proxy. CONNECT
-// requests are tunneled after an allow check; all other requests are treated
-// as plain HTTP forward-proxy requests.
+// Handler returns an [http.Handler] implementing the forward proxy.
 func (p *Proxy) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
@@ -45,12 +38,10 @@ func (p *Proxy) Handler() http.Handler {
 	})
 }
 
-// handleConnect services an HTTP CONNECT request. It extracts the target
-// host:port from the request line, applies the policy, and on success
-// hijacks the client connection, dials the target, and splices bytes
-// bidirectionally between client and target until either side closes.
+// handleConnect checks a CONNECT target against the policy, then hijacks the
+// client connection and splices it to the target.
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
-	target := r.Host // For CONNECT this is the "host:port" authority.
+	target := r.Host // for CONNECT this is the "host:port" authority
 	if !p.Policy.AllowAddr(target) {
 		p.logf("egress: DENY CONNECT %s", target)
 		http.Error(w, "Forbidden", http.StatusForbidden)
@@ -82,8 +73,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	p.logf("egress: ALLOW CONNECT %s", target)
 
-	// Splice the two connections. Each direction runs in its own
-	// goroutine; the function returns once both directions are done.
+	// Splice both directions; return once both are done.
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(upstream, client); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
@@ -91,11 +81,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	<-done
 }
 
-// handleHTTP services a plain (non-CONNECT) forward-proxy request. Such
-// requests carry an absolute URI whose host is checked against the policy.
-// Allowed requests are forwarded to the origin and the response copied back.
+// handleHTTP checks a plain forward-proxy request against the policy and, if
+// allowed, forwards it to the origin.
 func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
-	// A forward-proxy request has an absolute URL with a host set.
+	// A forward-proxy request carries an absolute URL with a host set.
 	host := r.URL.Host
 	if host == "" {
 		host = r.Host
@@ -112,8 +101,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		transport = http.DefaultTransport
 	}
 
-	// Build an outbound request from the inbound one. RequestURI must be
-	// empty for client requests.
+	// RequestURI must be empty on client requests.
 	outReq := r.Clone(r.Context())
 	outReq.RequestURI = ""
 
@@ -129,7 +117,6 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, resp.Body)
 }
 
-// copyHeader copies all header values from src into dst.
 func copyHeader(dst, src http.Header) {
 	for k, vs := range src {
 		for _, v := range vs {

@@ -8,8 +8,7 @@ import (
 	"github.com/adefemi171/runeward/internal/profile"
 )
 
-// Snapshot captures a sandbox's workspace and records the resulting reference in
-// the manager's snapshot registry (and the audit ledger).
+// Snapshot captures a sandbox's workspace and registers the reference.
 func (m *Manager) Snapshot(ctx context.Context, id, name string) (*backend.SnapshotRef, error) {
 	sess, err := m.session(id)
 	if err != nil {
@@ -41,8 +40,8 @@ func (m *Manager) ListSnapshots() []backend.SnapshotRef {
 	return out
 }
 
-// RestoreSnapshot recreates a governed sandbox seeded from a captured snapshot,
-// re-deriving the policy engine and guardrails from the snapshot's profile.
+// RestoreSnapshot recreates a governed sandbox from a snapshot, re-deriving
+// policy and guardrails from the snapshot's profile.
 func (m *Manager) RestoreSnapshot(ctx context.Context, snapshotID string) (*backend.Sandbox, error) {
 	m.snapMu.Lock()
 	ref, ok := m.snapshots[snapshotID]
@@ -53,8 +52,7 @@ func (m *Manager) RestoreSnapshot(ctx context.Context, snapshotID string) (*back
 
 	p, err := profile.Load(ref.Profile, profile.Options{ConfigDir: m.configDir})
 	if err != nil {
-		// Fall back to a minimal profile so restore still works if the source
-		// profile is no longer resolvable.
+		// Restore still works if the source profile is gone.
 		p = &profile.Profile{Name: ref.Profile}
 	}
 

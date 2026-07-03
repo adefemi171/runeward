@@ -7,9 +7,8 @@ import (
 	"time"
 )
 
-// Approval is a pending human-in-the-loop authorization request. It is created
-// when the policy engine renders a require-approval verdict for an action; the
-// blocked tool call waits on decided until an operator resolves it.
+// Approval is a pending human-in-the-loop authorization request. The blocked
+// tool call waits on decided until an operator resolves it.
 type Approval struct {
 	ID      string
 	Sandbox string
@@ -18,13 +17,12 @@ type Approval struct {
 	Reason  string
 	Created time.Time
 
-	// decided receives true on approve, false on deny. Buffered (cap 1) so a
-	// resolver never blocks even if the waiter has already timed out.
+	// decided receives true on approve, false on deny. Buffered so a resolver
+	// never blocks even if the waiter already timed out.
 	decided chan bool
 }
 
-// ApprovalView is the JSON-serializable projection of an [Approval] returned to
-// the dashboard/API (the resolution channel is intentionally omitted).
+// ApprovalView is the JSON projection of an Approval.
 type ApprovalView struct {
 	ID      string    `json:"id"`
 	Sandbox string    `json:"sandbox"`
@@ -62,8 +60,8 @@ func (s *ApprovalStore) Create(sandbox, tool, action, reason string) *Approval {
 	return ap
 }
 
-// List returns a snapshot of all pending approvals, oldest first is not
-// guaranteed (map order); callers sort if needed.
+// List returns a snapshot of pending approvals in map order; callers sort if
+// they need to.
 func (s *ApprovalStore) List() []ApprovalView {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -81,8 +79,8 @@ func (s *ApprovalStore) List() []ApprovalView {
 	return out
 }
 
-// Resolve delivers a decision to the waiting tool call and removes the approval
-// from the store. It reports whether an approval with that id was pending.
+// Resolve delivers a decision to the waiting tool call and removes the
+// approval. It reports whether that id was pending.
 func (s *ApprovalStore) Resolve(id string, approve bool) bool {
 	s.mu.Lock()
 	ap, ok := s.m[id]
@@ -97,16 +95,14 @@ func (s *ApprovalStore) Resolve(id string, approve bool) bool {
 	return true
 }
 
-// forget drops an approval without delivering a decision (used when the waiter
-// gives up so the inbox does not accumulate orphaned entries the operator can
-// no longer usefully act on). It is a no-op if already resolved.
+// forget drops an approval without delivering a decision, so a timed-out
+// waiter doesn't leave an orphaned entry in the inbox.
 func (s *ApprovalStore) forget(id string) {
 	s.mu.Lock()
 	delete(s.m, id)
 	s.mu.Unlock()
 }
 
-// newID returns a short random hex identifier.
 func newID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])

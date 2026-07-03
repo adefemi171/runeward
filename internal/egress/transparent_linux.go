@@ -11,27 +11,20 @@ import (
 	"time"
 )
 
-// soOriginalDst is the getsockopt option (SOL_IP level) that returns the
-// pre-DNAT destination of a connection that was redirected by iptables
-// REDIRECT. See linux/netfilter_ipv4.h.
+// soOriginalDst is the SOL_IP getsockopt that returns the pre-DNAT
+// destination of an iptables-REDIRECTed connection (linux/netfilter_ipv4.h).
 const soOriginalDst = 80
 
-// peekLimit bounds how many leading bytes are read to sniff the destination
-// hostname from the client's first flight (TLS ClientHello or HTTP request).
+// peekLimit bounds how many leading bytes are read to sniff the hostname.
 const peekLimit = 4096
 
-// TransparentProxy enforces a [Policy] on TCP connections that have been
-// transparently redirected to it by iptables (REDIRECT). Unlike [Proxy] it
-// requires no HTTP(S)_PROXY cooperation from the client: the kernel recovers
-// the original destination via SO_ORIGINAL_DST, and the destination hostname
-// is sniffed from the TLS SNI or HTTP Host header. This provides L3
-// (bypass-resistant) egress enforcement inside a shared network namespace.
-//
-// TransparentProxy is Linux-only; on other platforms Serve returns an error.
+// TransparentProxy enforces a [Policy] on connections redirected to it by
+// iptables. Unlike [Proxy] it needs no HTTP(S)_PROXY cooperation: the original
+// destination comes from SO_ORIGINAL_DST and the hostname is sniffed from TLS
+// SNI or the HTTP Host header. Linux-only.
 type TransparentProxy struct {
-	// Policy decides which destinations are reachable.
 	Policy Policy
-	// Logger receives allow/deny decisions. If nil, logging is discarded.
+	// Logger receives allow/deny decisions; nil discards them.
 	Logger *log.Logger
 }
 
@@ -41,8 +34,7 @@ func (t *TransparentProxy) logf(format string, args ...any) {
 	}
 }
 
-// Serve listens on addr (the iptables REDIRECT target port) and handles
-// redirected connections until an unrecoverable accept error occurs.
+// Serve handles redirected connections on addr until an accept error occurs.
 func (t *TransparentProxy) Serve(addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -63,8 +55,8 @@ func (t *TransparentProxy) Serve(addr string) error {
 	}
 }
 
-// handle services a single redirected connection: recover the original
-// destination, sniff the hostname, apply the policy, and splice on allow.
+// handle recovers the original destination, sniffs the hostname, applies the
+// policy, and splices on allow.
 func (t *TransparentProxy) handle(c *net.TCPConn) {
 	defer c.Close()
 
@@ -74,7 +66,6 @@ func (t *TransparentProxy) handle(c *net.TCPConn) {
 		return
 	}
 
-	// Sniff the client's opening bytes to recover a hostname.
 	peek := make([]byte, peekLimit)
 	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	n, _ := c.Read(peek)
@@ -93,8 +84,7 @@ func (t *TransparentProxy) handle(c *net.TCPConn) {
 	case host != "":
 		allowed = t.Policy.Allow(host)
 	default:
-		// No hostname recovered; fall back to matching the raw IP against
-		// CIDR rules and the policy default.
+		// No hostname; fall back to the raw IP against CIDR rules.
 		allowed = t.Policy.AllowAddr(dst)
 	}
 
@@ -128,8 +118,7 @@ func (t *TransparentProxy) handle(c *net.TCPConn) {
 	<-done
 }
 
-// originalDst returns the pre-DNAT "ip:port" destination of a redirected IPv4
-// connection using getsockopt(SO_ORIGINAL_DST).
+// originalDst returns the pre-DNAT "ip:port" of a redirected IPv4 connection.
 func originalDst(c *net.TCPConn) (string, error) {
 	raw, err := c.SyscallConn()
 	if err != nil {
@@ -143,8 +132,8 @@ func originalDst(c *net.TCPConn) (string, error) {
 			soErr = e
 			return
 		}
-		// mreq.Multiaddr holds a sockaddr_in: family(2) port(2, big-endian)
-		// addr(4). Bytes [2:4] are the port; [4:8] are the IPv4 address.
+		// mreq.Multiaddr is a sockaddr_in: [2:4] is the big-endian port,
+		// [4:8] the IPv4 address.
 		m := mreq.Multiaddr
 		port := int(m[2])<<8 | int(m[3])
 		ip := net.IPv4(byte(m[4]), byte(m[5]), byte(m[6]), byte(m[7]))

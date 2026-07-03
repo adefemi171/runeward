@@ -1,11 +1,7 @@
-// Package webhook implements the runeward admission webhook that enforces
-// cluster-scoped ClusterPolicy defaults and guardrails on namespaced Sandbox
-// and Fleet custom resources.
-//
-// The decision logic ([Decide]) is a pure function over a snapshot of policies
-// and is fully unit-testable without a cluster. The [Server] wires that logic
-// to the Kubernetes AdmissionReview contract: it lists ClusterPolicies through a
-// dynamic client on each request and serves /validate, /mutate, and /healthz.
+// Package webhook implements the runeward admission webhook enforcing
+// ClusterPolicy defaults and guardrails on Sandbox and Fleet resources.
+// The decision logic ([Decide]) is a pure function over a policy snapshot;
+// [Server] wires it to the Kubernetes AdmissionReview contract.
 package webhook
 
 import (
@@ -31,20 +27,19 @@ var clusterPolicyGVR = schema.GroupVersionResource{
 	Resource: "clusterpolicies",
 }
 
-// defaultedAnnotation is stamped onto resources whose profile was supplied by a
-// ClusterPolicy default.
+// defaultedAnnotation marks resources whose profile came from a ClusterPolicy
+// default.
 const defaultedAnnotation = "runeward.dev/cluster-policy-defaulted"
 
-// Server serves the runeward admission webhook endpoints. It reads the live set
-// of ClusterPolicies through dyn on every request so policy changes take effect
-// without a restart.
+// Server serves the admission webhook endpoints. It lists ClusterPolicies on
+// every request so policy changes take effect without a restart.
 type Server struct {
 	dyn    dynamic.Interface
 	logger *log.Logger
 }
 
 // NewServer builds a Server backed by the given dynamic client. A nil logger
-// falls back to the standard logger.
+// uses the standard logger.
 func NewServer(dyn dynamic.Interface, logger *log.Logger) *Server {
 	if logger == nil {
 		logger = log.Default()
@@ -114,9 +109,8 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	writeReview(w, review, resp)
 }
 
-// handleMutate defaults an empty spec.profile from a ClusterPolicy, emitting a
-// JSONPatch when a value is applied. It always admits; rejection is the
-// validating webhook's job.
+// handleMutate defaults an empty spec.profile from a ClusterPolicy. It always
+// admits; rejection is the validating webhook's job.
 func (s *Server) handleMutate(w http.ResponseWriter, r *http.Request) {
 	review, req, obj, ok := s.decode(w, r)
 	if !ok {
@@ -156,7 +150,7 @@ type jsonPatchOp struct {
 	Value any    `json:"value,omitempty"`
 }
 
-// profilePatch builds the JSONPatch that sets spec.profile and stamps the
+// profilePatch builds the JSONPatch setting spec.profile and stamping the
 // defaulted annotation, creating the annotations map when absent.
 func profilePatch(obj *unstructured.Unstructured, profile string) ([]byte, error) {
 	ops := []jsonPatchOp{{Op: "add", Path: "/spec/profile", Value: profile}}
@@ -192,8 +186,8 @@ func escapeJSONPointer(s string) string {
 	return string(out)
 }
 
-// decode reads an AdmissionReview from the request and unmarshals the incoming
-// object. On failure it writes an error response and returns ok=false.
+// decode reads an AdmissionReview and unmarshals the incoming object. On
+// failure it writes an error response and returns ok=false.
 func (s *Server) decode(w http.ResponseWriter, r *http.Request) (review *admissionv1.AdmissionReview, req *admissionv1.AdmissionRequest, obj *unstructured.Unstructured, ok bool) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -225,8 +219,8 @@ func allowedResponse(uid types.UID) *admissionv1.AdmissionResponse {
 	return &admissionv1.AdmissionResponse{UID: uid, Allowed: true}
 }
 
-// writeReview echoes the response into a fresh AdmissionReview envelope,
-// preserving the request UID and the v1 TypeMeta.
+// writeReview wraps the response in an AdmissionReview envelope, preserving
+// the request's TypeMeta.
 func writeReview(w http.ResponseWriter, in *admissionv1.AdmissionReview, resp *admissionv1.AdmissionResponse) {
 	out := &admissionv1.AdmissionReview{
 		TypeMeta: metav1.TypeMeta{

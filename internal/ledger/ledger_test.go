@@ -10,7 +10,6 @@ import (
 	"testing"
 )
 
-// newLedger opens a fresh ledger in a temp dir and registers cleanup.
 func newLedger(t *testing.T) (*Ledger, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
@@ -78,7 +77,7 @@ func TestVerifyDetectsTampering(t *testing.T) {
 	}
 
 	// Rewrite the second record's Action on disk, leaving its stored Hash
-	// untouched so the recomputed hash no longer matches.
+	// untouched.
 	lines := readLines(t, path)
 	var ev Event
 	if err := json.Unmarshal([]byte(lines[1]), &ev); err != nil {
@@ -184,7 +183,6 @@ func TestExportProducesValidJSON(t *testing.T) {
 		t.Fatalf("expected 2 exported events for s1, got %d", len(events))
 	}
 
-	// sessionID == "" exports everything.
 	buf.Reset()
 	if err := l.Export(&buf, ""); err != nil {
 		t.Fatalf("Export(all): %v", err)
@@ -210,7 +208,6 @@ func TestRedactHashesPayloadAndVerifies(t *testing.T) {
 	}
 	payloadBefore := hashPayload(raw)
 
-	// Redact only the exact sensitive value across all payload fields.
 	red := Redact(raw, "secret-token")
 	if !red.Redacted {
 		t.Fatal("Redact should set Redacted=true")
@@ -227,7 +224,6 @@ func TestRedactHashesPayloadAndVerifies(t *testing.T) {
 	if red.Meta["token"] == "secret-token" || red.Meta["region"] != "us" {
 		t.Fatalf("meta redaction wrong: %+v", red.Meta)
 	}
-	// Original event must be untouched (defensive copy).
 	if raw.Args[0] != "secret-token" || raw.Meta["token"] != "secret-token" {
 		t.Fatal("Redact mutated the caller's event")
 	}

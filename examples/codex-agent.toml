@@ -15,9 +15,9 @@ image   = "runeward-agent:dev"
 user    = "agent"
 workdir = "/workspace"
 
-# Deny-by-default egress; only the OpenAI API is reachable. (Docker enforcement
-# is cooperative — codex/reqwest honors HTTP(S)_PROXY. For bypass-proof L3
-# enforcement, run this on the k8s backend with enforce = "strict".)
+# Deny-by-default egress; only the OpenAI API is reachable. Docker enforcement
+# is cooperative (codex honors HTTP(S)_PROXY). For bypass-proof L3 enforcement,
+# run this on the k8s backend with enforce = "strict".
 [network]
 default = "deny"
 

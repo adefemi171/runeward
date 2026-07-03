@@ -17,11 +17,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// newWebhookCmd runs the runeward admission webhook that enforces cluster-scoped
-// ClusterPolicy defaults and guardrails on Sandbox and Fleet custom resources.
-// It self-registers its ValidatingWebhookConfiguration and
-// MutatingWebhookConfiguration at startup, using a self-signed serving
-// certificate whose CA it publishes in the webhook configs' caBundle.
+// newWebhookCmd runs the admission webhook enforcing ClusterPolicy on Sandbox
+// and Fleet CRs. It self-registers its webhook configurations at startup with
+// a self-signed cert whose CA goes into the caBundle.
 func newWebhookCmd(configDir *string) *cobra.Command {
 	_ = configDir // profiles are not resolved by the webhook; kept for symmetry.
 	var port int

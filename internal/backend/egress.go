@@ -9,8 +9,7 @@ import (
 	"github.com/adefemi171/runeward/internal/profile"
 )
 
-// policyFromNetwork translates a profile's declarative [profile.Network] into an
-// [egress.Policy] the proxy enforces.
+// policyFromNetwork translates a profile's [profile.Network] into an [egress.Policy].
 func policyFromNetwork(n profile.Network) egress.Policy {
 	def := n.Default
 	if def == "" {
@@ -27,8 +26,7 @@ func policyFromNetwork(n profile.Network) egress.Policy {
 	return egress.Policy{Default: def, Rules: rules}
 }
 
-// proxyEnv returns the HTTP(S)_PROXY environment injected into a sandbox so its
-// outbound traffic is routed through the egress proxy reachable at proxyURL.
+// proxyEnv returns the HTTP(S)_PROXY variables pointing a sandbox at proxyURL.
 func proxyEnv(proxyURL string) map[string]string {
 	return map[string]string{
 		"HTTP_PROXY":  proxyURL,
@@ -40,16 +38,14 @@ func proxyEnv(proxyURL string) map[string]string {
 	}
 }
 
-// hostProxy is an in-process egress proxy bound to a host port. The Docker
-// backend uses it to constrain a container's egress; the container reaches it
+// hostProxy is an in-process egress proxy on a host port; containers reach it
 // via host.docker.internal:<port>.
 type hostProxy struct {
 	srv  *http.Server
 	port int
 }
 
-// startHostProxy binds an ephemeral host port and serves the egress proxy for
-// pol in a background goroutine.
+// startHostProxy serves the egress proxy for pol on an ephemeral host port.
 func startHostProxy(pol egress.Policy, logger *log.Logger) (*hostProxy, error) {
 	ln, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {

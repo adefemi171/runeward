@@ -8,9 +8,8 @@ import (
 // version is overridden at build time via -ldflags.
 var version = "dev"
 
-// reserved lists the real subcommands. Any first argument that is not reserved
-// is treated as a profile name to enter (so `runeward work` works alongside
-// `runeward serve`).
+// reserved lists the real subcommands; any other first argument is treated as
+// a profile name to enter.
 var reserved = map[string]bool{
 	"serve":      true,
 	"mcp":        true,
@@ -30,8 +29,8 @@ var reserved = map[string]bool{
 	"--help":     true,
 }
 
-// Execute parses args and runs the CLI. Unknown leading tokens are rewritten to
-// the `enter` subcommand so a bare profile name is a valid invocation.
+// Execute parses args and runs the CLI. A bare profile name is rewritten to
+// `enter <profile>`.
 func Execute(args []string) error {
 	root := newRootCmd()
 	root.SetArgs(rewriteForEnter(args))
@@ -44,8 +43,8 @@ func rewriteForEnter(args []string) []string {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if len(a) > 0 && a[0] == '-' {
-			// Global flags that take a value would need to skip the value; the
-			// only such flag today is --config-dir, handled generically below.
+			// Flags that take a value must skip it too; --config-dir is the
+			// only one today.
 			if a == "--config-dir" || a == "-c" {
 				i++ // skip the value
 			}
@@ -54,7 +53,6 @@ func rewriteForEnter(args []string) []string {
 		if reserved[a] {
 			return args
 		}
-		// Insert "enter" at position i.
 		out := make([]string, 0, len(args)+1)
 		out = append(out, args[:i]...)
 		out = append(out, "enter")

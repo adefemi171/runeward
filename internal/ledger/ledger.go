@@ -1,20 +1,7 @@
-// Package ledger implements a tamper-evident, append-only audit ledger for
-// runeward. Every governed action an agent takes (a shell command, a file
-// read, an outbound connection, an approval decision) is recorded as an
-// [Event]. Events are persisted as JSON Lines (one JSON object per line) so the
-// file stays human-greppable and streaming-friendly.
-//
-// Tamper evidence comes from a hash chain: each record embeds the SHA-256 hash
-// of the previous record (PrevHash) and its own hash (Hash) computed over a
-// canonical serialization of its core fields plus PrevHash. Because every hash
-// depends on the one before it, altering any historical record (or reordering,
-// inserting, or deleting one) breaks the chain and is detected by [Ledger.Verify].
-//
-// The ledger is append-only and safe for concurrent use by multiple goroutines
-// in one process. Across processes, [Open] takes an advisory file lock so only
-// one runeward process may write a given ledger at a time (a second process
-// pointed at the same file fails fast rather than corrupting the chain). It
-// depends only on the Go standard library.
+// Package ledger implements an append-only audit ledger stored as JSON Lines.
+// Each record embeds the SHA-256 hash of the previous record, so any edit,
+// insertion, or reorder breaks the chain and is caught by Verify. Open takes
+// an advisory file lock so only one process can write a given ledger at a time.
 package ledger
 
 import (
@@ -33,94 +20,75 @@ import (
 	"time"
 )
 
-// Event is a single audited action recorded in the ledger. Callers populate the
-// descriptive fields (SessionID, Sandbox, Tool, Action, ...); the ledger assigns
-// the chain fields (Seq, Time, PrevHash, Hash) on [Ledger.Append].
+// Event is a single audited action. Callers fill in the descriptive fields;
+// Append assigns Seq, Time, PrevHash, and Hash.
 type Event struct {
-	// Seq is the 1-based sequence number, assigned by the ledger on append.
-	Seq int `json:"seq"`
-	// Time is the event timestamp, set to time.Now() on append if left zero.
+	Seq  int       `json:"seq"`
 	Time time.Time `json:"time"`
 
 	SessionID string `json:"session_id"`
-	// Sandbox is the sandbox id the action ran in.
-	Sandbox string `json:"sandbox"`
-	Profile string `json:"profile"`
-	// Tool is the action surface, e.g. "shell", "python", "node",
-	// "file.read", "file.write", "net", "approval".
+	Sandbox   string `json:"sandbox"`
+	Profile   string `json:"profile"`
+	// Tool is the action surface, e.g. "shell", "file.read", "net", "approval".
 	Tool string `json:"tool"`
 	// Action is the primary argument: the command, path, or hostname.
-	Action string `json:"action"`
-	// Args holds optional structured arguments.
-	Args []string `json:"args,omitempty"`
-	// Verdict is the policy decision, e.g. "allow", "deny",
-	// "require-approval", or "".
-	Verdict string `json:"verdict"`
+	Action  string   `json:"action"`
+	Args    []string `json:"args,omitempty"`
+	Verdict string   `json:"verdict"`
 
 	ExitCode   int   `json:"exit_code"`
 	DurationMS int64 `json:"duration_ms"`
 
-	// Meta carries freeform correlation data. Keys are sorted before hashing
-	// so the record hash is independent of Go map iteration order.
+	// Meta keys are sorted before hashing so the record hash is independent
+	// of map iteration order.
 	Meta map[string]string `json:"meta,omitempty"`
 
-	// Redacted reports whether sensitive payload fields were replaced by their
-	// hashes rather than stored in the clear (see [Redact]).
 	Redacted bool `json:"redacted"`
-	// PayloadHash is the SHA-256 hex of the canonical original payload,
-	// recorded when Redacted is true so plaintext can later be proven to match.
+	// PayloadHash is the SHA-256 hex of the original payload, recorded when
+	// Redacted is true so plaintext can later be proven to match.
 	PayloadHash string `json:"payload_hash,omitempty"`
 
-	// PrevHash is the Hash of the preceding record ("" for the genesis record).
+	// PrevHash is empty for the genesis record.
 	PrevHash string `json:"prev_hash"`
-	// Hash is the SHA-256 hex over this record's canonical core fields + PrevHash.
-	Hash string `json:"hash"`
+	Hash     string `json:"hash"`
 
-	// KeyID identifies the signing key when the record is signed ("" when the
-	// ledger is unsigned). It is the short fingerprint of the public key.
+	// KeyID and Sig are set when the ledger has a Signer. Both are excluded
+	// from hashEvent so signing does not alter the chain hash.
 	KeyID string `json:"key_id,omitempty"`
-	// Sig is the base64 ed25519 signature over this record's Hash, produced by
-	// the ledger's [Signer]. Sig and KeyID are deliberately excluded from
-	// hashEvent so signing does not alter the chain hash.
-	Sig string `json:"sig,omitempty"`
+	Sig   string `json:"sig,omitempty"`
 }
 
-// Ledger is an append-only, hash-chained audit log backed by a JSON Lines file.
-// The zero value is not usable; construct one with [Open]. All methods are safe
-// for concurrent use.
+// Ledger is an append-only, hash-chained audit log backed by a JSON Lines
+// file. Construct with Open. Safe for concurrent use.
 type Ledger struct {
 	mu   sync.Mutex
 	f    *os.File
 	path string
 
-	// tipHash is the Hash of the most recent record (the chain tip), "" when
-	// the ledger is empty. seq is the highest sequence number written so far.
+	// tipHash is the Hash of the most recent record, "" when empty.
 	tipHash string
 	seq     int
 
-	// signer, when set, signs every appended record's Hash with an ed25519 key.
 	signer *Signer
 }
 
-// SetSigner attaches a [Signer] so that subsequent [Ledger.Append] calls sign
-// each record. Passing nil disables signing. It is safe to call once after
-// [Open], before concurrent appends begin.
+// SetSigner attaches a Signer so subsequent appends sign each record; nil
+// disables signing. Call it after Open, before concurrent appends begin.
 func (l *Ledger) SetSigner(s *Signer) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.signer = s
 }
 
-// Open opens (creating if necessary) the JSON Lines file at path for appending
-// and scans it to recover the current chain tip (last Hash) and sequence number
-// so that appends continue an existing chain rather than starting a new one.
+// Open opens or creates the ledger file at path and recovers the chain tip
+// and sequence number so appends continue an existing chain.
 func Open(path string) (*Ledger, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("ledger: open %q: %w", path, err)
 	}
-	// Guard against a second process appending to the same file concurrently,
-	// which would interleave sequence numbers and break the hash chain.
+	// A second process appending concurrently would interleave sequence
+	// numbers and break the chain.
 	if err := lockFile(f); err != nil {
 		_ = f.Close()
 		return nil, err
@@ -152,9 +120,8 @@ func (l *Ledger) Close() error {
 	return err
 }
 
-// Append assigns Seq and Time (if zero), links PrevHash to the current chain
-// tip, computes Hash over the canonical form, writes the record as one JSON
-// line, fsyncs it to disk, advances the tip, and returns the stored event.
+// Append writes ev as one JSON line with chain fields set, fsyncs, and
+// returns the stored event.
 func (l *Ledger) Append(ev Event) (Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -198,11 +165,8 @@ func (l *Ledger) Records() ([]Event, error) {
 	return readAll(l.path)
 }
 
-// Verify walks the ledger from the genesis record, recomputing each record's
-// hash and checking its linkage to the previous record. It returns a
-// descriptive error identifying the first record whose recomputed hash, prev
-// hash linkage, or sequence number does not match, or nil if the chain is
-// intact.
+// Verify recomputes every record's hash and chain linkage, returning an error
+// identifying the first bad record or nil if the chain is intact.
 func (l *Ledger) Verify() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -229,9 +193,7 @@ func (l *Ledger) Verify() error {
 	return nil
 }
 
-// Replay returns the ordered events for a single session. It is the basis for
-// deterministic replay: a caller can iterate these recorded results and
-// substitute them for re-running the underlying side effects.
+// Replay returns the ordered events for a single session.
 func (l *Ledger) Replay(sessionID string) ([]Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -249,8 +211,8 @@ func (l *Ledger) Replay(sessionID string) ([]Event, error) {
 	return out, nil
 }
 
-// Export writes a pretty-printed JSON array of a session's events to w for
-// compliance handoff. When sessionID is "", every event is exported.
+// Export writes a pretty-printed JSON array of a session's events to w.
+// An empty sessionID exports everything.
 func (l *Ledger) Export(w io.Writer, sessionID string) error {
 	l.mu.Lock()
 	recs, err := readAll(l.path)
@@ -277,23 +239,18 @@ func (l *Ledger) Export(w io.Writer, sessionID string) error {
 	return nil
 }
 
-// Redact returns a copy of ev with sensitive payload fields replaced by their
-// SHA-256 hashes and Redacted set to true. PayloadHash is set to the hash of
-// the canonical original payload (Action + Args + sorted Meta), so a party who
-// later learns the plaintext can prove it matches without the plaintext ever
-// touching the ledger.
-//
-// When no sensitive values are supplied, the entire payload is redacted: Action,
-// every Args entry, and every Meta value are replaced by their individual
-// "sha256:<hex>" digests. When one or more sensitive values are supplied, only
-// payload strings exactly equal to one of them are replaced. Tool, Verdict,
-// SessionID, and other structural fields are always preserved so the chain and
-// replay remain meaningful.
+// Redact returns a copy of ev with payload fields replaced by their
+// "sha256:<hex>" digests and Redacted set. PayloadHash records the hash of
+// the original payload so plaintext can later be proven to match without
+// touching the ledger. With no sensitive values, the whole payload (Action,
+// Args, Meta values) is redacted; otherwise only strings exactly equal to a
+// sensitive value are. Structural fields (Tool, Verdict, SessionID) are
+// always preserved.
 func Redact(ev Event, sensitive ...string) Event {
 	ev.PayloadHash = hashPayload(ev)
 	ev.Redacted = true
 
-	// Copy slices/maps so we never mutate the caller's Event.
+	// Copy slices/maps so we don't mutate the caller's Event.
 	if ev.Args != nil {
 		args := make([]string, len(ev.Args))
 		copy(args, ev.Args)
@@ -338,8 +295,7 @@ func Redact(ev Event, sensitive ...string) Event {
 	return ev
 }
 
-// redactString replaces a non-empty string with its "sha256:<hex>" digest,
-// leaving empty strings untouched.
+// redactString replaces a non-empty string with its "sha256:<hex>" digest.
 func redactString(s string) string {
 	if s == "" {
 		return ""
@@ -348,18 +304,10 @@ func redactString(s string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// hashEvent computes the hex-encoded SHA-256 record hash over a canonical,
-// map-order-independent serialization of the event's core fields plus PrevHash.
-//
-// Canonical form: each field below is written to the hash as an 8-byte
-// big-endian length prefix followed by its raw bytes (integers first rendered
-// as base-10 ASCII, booleans as "0"/"1"). Length prefixing makes the encoding
-// unambiguous, so no field value can be crafted to imitate another. The Hash
-// field itself is excluded. Fields are written in this fixed order:
-//
-//	Seq, Time (RFC3339Nano in UTC), SessionID, Sandbox, Profile, Tool, Action,
-//	len(Args), each Arg, Verdict, ExitCode, DurationMS, len(Meta),
-//	each sorted Meta key then its value, Redacted, PayloadHash, PrevHash.
+// hashEvent computes the SHA-256 record hash over the event's core fields
+// plus PrevHash, in a fixed order. Each field is length-prefixed so no value
+// can imitate another; Meta keys are sorted; Hash, Sig, and KeyID are
+// excluded.
 func hashEvent(ev Event) string {
 	h := sha256.New()
 	putInt(h, int64(ev.Seq))
@@ -383,9 +331,8 @@ func hashEvent(ev Event) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// hashPayload computes the hex-encoded SHA-256 over just the sensitive payload
-// (Action, Args, and sorted Meta) using the same length-prefixed encoding as
-// hashEvent. It is recorded in PayloadHash when an event is redacted.
+// hashPayload hashes just the payload (Action, Args, sorted Meta) using the
+// same encoding as hashEvent.
 func hashPayload(ev Event) string {
 	h := sha256.New()
 	putStr(h, ev.Action)
@@ -397,8 +344,8 @@ func hashPayload(ev Event) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// putMeta writes a map's entries in sorted-key order so the digest is
-// independent of Go map iteration order.
+// putMeta writes entries in sorted-key order so the digest is independent of
+// map iteration order.
 func putMeta(w io.Writer, m map[string]string) {
 	putInt(w, int64(len(m)))
 	if len(m) == 0 {
@@ -435,8 +382,8 @@ func putBool(w io.Writer, b bool) {
 	putStr(w, "0")
 }
 
-// readAll parses every JSON Lines record from path in order. A missing file is
-// treated as an empty ledger. Blank lines are skipped.
+// readAll parses every record from path in order. A missing file is an empty
+// ledger; blank lines are skipped.
 func readAll(path string) ([]Event, error) {
 	f, err := os.Open(path)
 	if err != nil {

@@ -1,0 +1,4 @@
+[host]
+type="container"
+image="node:latest"
+workdir="/workspace"

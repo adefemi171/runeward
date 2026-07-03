@@ -1,10 +1,7 @@
-// Package agent implements the in-sandbox agent: a small HTTP server that runs
-// inside a sandbox container/pod and exposes structured shell, code, and file
-// operations over JSON.
-//
-// All file operations are confined to a single workspace root. The resolve
-// helper guarantees that no request can read or write outside of that root,
-// protecting against ".." traversal and absolute-path escapes.
+// Package agent implements the in-sandbox agent, a small HTTP server exposing
+// shell, code, and file operations over JSON. All file operations are confined
+// to a single workspace root; resolve rejects ".." traversal and absolute-path
+// escapes.
 package agent
 
 import (
@@ -22,21 +19,16 @@ import (
 	"time"
 )
 
-// maxSearchMatches caps the number of results returned by /v1/file/search so a
-// large workspace cannot produce an unbounded response.
+// maxSearchMatches caps /v1/file/search results.
 const maxSearchMatches = 500
 
-// Server exposes shell, code, and file operations over HTTP. All file
-// operations are confined to root.
+// Server exposes shell, code, and file operations over HTTP, with file access
+// confined to root.
 type Server struct {
-	// root is the absolute, cleaned workspace directory that every file
-	// operation is confined to.
-	root string
+	root string // absolute, cleaned workspace dir
 }
 
-// New constructs a Server whose file operations are confined to root. The root
-// is converted to an absolute, cleaned path; if that fails the raw value is
-// retained and resolve will still reject escapes relative to it.
+// New constructs a Server whose file operations are confined to root.
 func New(root string) *Server {
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -45,7 +37,7 @@ func New(root string) *Server {
 	return &Server{root: abs}
 }
 
-// Handler returns an *http.ServeMux wiring every agent endpoint.
+// Handler returns the mux wiring every agent endpoint.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
@@ -60,16 +52,14 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// resolve joins rel with the server root, cleans the result, and returns an
-// error if the resulting path escapes root. It rejects absolute paths and any
-// ".." traversal that would leave the workspace.
+// resolve joins rel with root and errors if the cleaned result escapes it,
+// rejecting absolute paths and ".." traversal.
 func (s *Server) resolve(rel string) (string, error) {
 	if filepath.IsAbs(rel) {
 		return "", fmt.Errorf("path %q must be relative to root", rel)
 	}
 	joined := filepath.Join(s.root, rel)
 	cleaned := filepath.Clean(joined)
-	// The cleaned path must be the root itself or live beneath it.
 	if cleaned != s.root && !strings.HasPrefix(cleaned, s.root+string(os.PathSeparator)) {
 		return "", fmt.Errorf("path %q escapes workspace root", rel)
 	}
@@ -196,8 +186,8 @@ func (s *Server) handleNode(w http.ResponseWriter, r *http.Request) {
 	s.runScript(w, r, "node", ".js")
 }
 
-// runScript writes the request code to a temp file under the OS temp dir, runs
-// it with the given interpreter, and cleans up.
+// runScript writes the request code to a temp file, runs it with the given
+// interpreter, and cleans up.
 func (s *Server) runScript(w http.ResponseWriter, r *http.Request, interpreter, ext string) {
 	req, ok := decode[codeRequest](w, r)
 	if !ok {
@@ -226,9 +216,8 @@ func (s *Server) runScript(w http.ResponseWriter, r *http.Request, interpreter, 
 	writeJSON(w, http.StatusOK, res)
 }
 
-// runCommand executes argv (no shell) in workdir with the supplied environment
-// overrides and optional timeout, returning a populated execResponse. Non-zero
-// exit codes are reported in the response rather than as HTTP errors.
+// runCommand executes argv (no shell) in workdir. Non-zero exit codes are
+// reported in the response, not as HTTP errors.
 func (s *Server) runCommand(ctx context.Context, argv []string, workdir string, env map[string]string, timeoutMS int) execResponse {
 	if timeoutMS > 0 {
 		var cancel context.CancelFunc
@@ -267,8 +256,7 @@ func (s *Server) runCommand(ctx context.Context, argv []string, workdir string, 
 		if errors.As(err, &exitErr) {
 			res.ExitCode = exitErr.ExitCode()
 		} else {
-			// Command could not be started (e.g. interpreter missing) or was
-			// killed by the deadline. Surface -1 and record the reason.
+			// Failed to start (missing interpreter) or killed by the deadline.
 			res.ExitCode = -1
 			if res.Stderr != "" {
 				res.Stderr += "\n"
@@ -410,7 +398,7 @@ func (s *Server) handleFileSearch(w http.ResponseWriter, r *http.Request) {
 	matches := make([]searchMatch, 0)
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			// Skip unreadable entries rather than aborting the whole walk.
+			// Skip unreadable entries rather than aborting the walk.
 			return nil
 		}
 		if d.IsDir() {
@@ -445,12 +433,11 @@ func (s *Server) handleFileSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, fileSearchResponse{Matches: matches})
 }
 
-// errStopWalk is a sentinel used to halt filepath.WalkDir once the match cap is
-// reached.
+// errStopWalk halts filepath.WalkDir once the match cap is reached.
 var errStopWalk = errors.New("stop walk")
 
-// searchFile scans a single file for query, returning up to limit matches with
-// paths reported relative to root.
+// searchFile scans one file for query, returning up to limit matches with paths
+// relative to root.
 func searchFile(path, query, root string, limit int) ([]searchMatch, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -488,8 +475,8 @@ func searchFile(path, query, root string, limit int) ([]searchMatch, error) {
 
 // --- helpers ---
 
-// decode enforces POST, decodes a JSON body into T, and writes a 400 on
-// failure. The bool result reports whether decoding succeeded.
+// decode enforces POST and decodes a JSON body into T, writing a 400 on
+// failure.
 func decode[T any](w http.ResponseWriter, r *http.Request) (T, bool) {
 	var v T
 	if r.Method != http.MethodPost {
@@ -504,14 +491,12 @@ func decode[T any](w http.ResponseWriter, r *http.Request) (T, bool) {
 	return v, true
 }
 
-// writeJSON serializes v as JSON with the given status code.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// writeError writes a JSON error body with the given status code.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }

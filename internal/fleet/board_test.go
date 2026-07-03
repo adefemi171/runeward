@@ -128,19 +128,16 @@ func TestIllegalTransition(t *testing.T) {
 	b := Seed([]string{"x"})
 	pending := b.List()[0]
 
-	// Complete on a pending (non-claimed) task is illegal.
 	err := b.Complete(pending.ID, "res")
 	if !errors.Is(err, ErrIllegalTransition) {
 		t.Fatalf("Complete on pending err = %v, want ErrIllegalTransition", err)
 	}
 
-	// Fail on a pending (non-claimed) task is illegal.
 	err = b.Fail(pending.ID, "e", false)
 	if !errors.Is(err, ErrIllegalTransition) {
 		t.Fatalf("Fail on pending err = %v, want ErrIllegalTransition", err)
 	}
 
-	// Double-complete: complete a done task is illegal.
 	c, _ := b.Claim("w")
 	if err := b.Complete(c.ID, "ok"); err != nil {
 		t.Fatalf("first Complete: %v", err)
@@ -175,10 +172,8 @@ func TestUniqueIDs(t *testing.T) {
 	}
 }
 
-// TestConcurrentClaim is the core safety test: many workers hammer Claim on a
-// large board and each completes what it claims. We assert no task is ever
-// handed to two workers and that every task ends up Done. It must pass under
-// `go test -race`.
+// TestConcurrentClaim asserts no task is ever handed to two workers and every
+// task ends up done. Must pass under -race.
 func TestConcurrentClaim(t *testing.T) {
 	const (
 		numTasks   = 1000
@@ -242,9 +237,8 @@ func TestConcurrentClaim(t *testing.T) {
 	}
 }
 
-// TestConcurrentClaimWithRequeue exercises Claim/Fail-requeue/Complete under
-// concurrency: the first attempt on each task fails and requeues, the second
-// completes, so every task must still finish Done with Attempts >= 2.
+// TestConcurrentClaimWithRequeue fails the first attempt on each task and
+// completes the second, so every task must finish done with Attempts >= 2.
 func TestConcurrentClaimWithRequeue(t *testing.T) {
 	const (
 		numTasks   = 500

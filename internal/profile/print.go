@@ -10,9 +10,8 @@ import (
 // redacted is the placeholder shown in place of secret values.
 const redacted = "«redacted»"
 
-// Print renders a human-readable, redacted view of the resolved profile so an
-// operator can read the box before stepping into it. Secret env sources are
-// never shown; only their reference kind is described.
+// Print renders a human-readable view of the resolved profile. Secret env
+// values are never shown, only their source kind.
 func Print(w io.Writer, p *Profile) {
 	fmt.Fprintf(w, "profile: %s\n", p.Name)
 	fmt.Fprintf(w, "source:  %s\n", p.Source)

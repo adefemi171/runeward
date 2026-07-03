@@ -10,18 +10,16 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// controlMessage is a JSON control frame sent by the browser terminal, e.g. a
-// resize event. Anything that is not a recognized control frame is treated as
-// raw keystroke input written to the sandbox PTY.
+// controlMessage is a JSON control frame from the browser terminal (e.g.
+// resize). Anything else on the socket is raw keystroke input.
 type controlMessage struct {
 	Type string `json:"type"`
 	Rows uint16 `json:"rows"`
 	Cols uint16 `json:"cols"`
 }
 
-// handleTerminal upgrades the request to a WebSocket and bridges it to an
-// interactive PTY in the sandbox: browser keystrokes -> PTY stdin, PTY output
-// -> browser, and {"type":"resize"} control frames -> PTY window size.
+// handleTerminal upgrades to a WebSocket and bridges it to a sandbox PTY,
+// handling {"type":"resize"} control frames along the way.
 func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, ok := s.mgr.Sandbox(id); !ok {
@@ -36,7 +34,6 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// PTY stdin is fed from the WebSocket read loop through a pipe.
 	pr, pw := io.Pipe()
 	resize := make(chan backend.TermSize, 1)
 	out := &wsWriter{conn: conn}
@@ -78,9 +75,8 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "session ended"))
 }
 
-// wsWriter adapts a WebSocket connection to an io.Writer, sending each write as
-// a binary message. Writes are serialized because gorilla connections do not
-// support concurrent writers.
+// wsWriter adapts a WebSocket connection to an io.Writer. Writes are serialized
+// because gorilla connections do not support concurrent writers.
 type wsWriter struct {
 	mu   sync.Mutex
 	conn *websocket.Conn

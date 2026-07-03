@@ -14,10 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newBundleCmd provides tools to sign, publish, and fetch policy bundles: the
-// signed, versioned OCI artifacts that carry a profile's authority policy. A
-// profile references one via its [policy_bundle] table; the ed25519 key printed
-// by `bundle keygen` produces the signature verified at pull time.
+// newBundleCmd provides sign/publish/fetch tooling for OCI policy bundles.
 func newBundleCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bundle",
@@ -54,8 +51,8 @@ func newBundleKeygenCmd() *cobra.Command {
 			}
 			keyPath := filepath.Join(out, "bundle.key")
 			pubPath := filepath.Join(out, "bundle.pub")
-			// Keys are stored base64-encoded (both halves) so `bundle push
-			// --key` and profile verify_key can consume them directly.
+			// Both halves are base64 so `bundle push --key` and profile
+			// verify_key can consume them directly.
 			if err := os.WriteFile(keyPath, []byte(privB64+"\n"), 0o600); err != nil {
 				return err
 			}
@@ -176,7 +173,6 @@ func newBundlePullCmd() *cobra.Command {
 	return cmd
 }
 
-// loadPrivateKey reads a base64 ed25519 private key from a file.
 func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -185,8 +181,7 @@ func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
 	return policybundle.DecodePrivateKey(strings.TrimSpace(string(b)))
 }
 
-// loadPublicKey accepts either an inline base64 public key or a path to a file
-// containing one, and returns the decoded key.
+// loadPublicKey accepts an inline base64 key or a path to a file containing one.
 func loadPublicKey(keyOrPath string) (ed25519.PublicKey, error) {
 	val := strings.TrimSpace(keyOrPath)
 	if b, err := os.ReadFile(val); err == nil {

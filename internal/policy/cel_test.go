@@ -22,7 +22,7 @@ func TestCELEngineEvaluate(t *testing.T) {
 		want      profile.Verdict
 	}{
 		{"shell", "rm -rf /", profile.VerdictDeny},
-		{"shell", "ls -la", profile.VerdictDeny}, // falls through to default (deny)
+		{"shell", "ls -la", profile.VerdictDeny}, // default
 		{"file.write", "/etc/motd", profile.VerdictRequireApprove},
 		{"file.write", "/workspace/x", profile.VerdictDeny}, // default
 		{"net", "db.svc.internal", profile.VerdictAllow},
@@ -36,20 +36,16 @@ func TestCELEngineEvaluate(t *testing.T) {
 }
 
 func TestCELEngineCompileErrors(t *testing.T) {
-	// Non-boolean result must be rejected.
 	if _, err := NewCEL([]profile.CELRule{{Expr: `arg`}}, ""); err == nil {
 		t.Fatal("expected error for non-bool expression")
 	}
-	// Unknown variable must be rejected.
 	if _, err := NewCEL([]profile.CELRule{{Expr: `nope == "x"`}}, ""); err == nil {
 		t.Fatal("expected error for unknown variable")
 	}
-	// Empty expr rejected.
 	if _, err := NewCEL([]profile.CELRule{{Expr: ""}}, ""); err == nil {
 		t.Fatal("expected error for empty expr")
 	}
 }
 
-// CELEngine and Engine must both satisfy Evaluator.
 var _ Evaluator = (*CELEngine)(nil)
 var _ Evaluator = (*Engine)(nil)

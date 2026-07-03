@@ -30,7 +30,6 @@ func TestSignedLedgerVerifiesAndDetectsTampering(t *testing.T) {
 		t.Fatalf("VerifySignatures should pass: %v", err)
 	}
 
-	// A different key must not verify.
 	other, _ := LoadOrCreateSigner(t.TempDir())
 	if err := l.VerifySignatures(other.Public(), true); err == nil {
 		t.Fatal("verification with wrong key should fail")
@@ -65,7 +64,6 @@ func TestExportAndVerifyBundle(t *testing.T) {
 		t.Fatalf("verified %d events, want 4", n)
 	}
 
-	// Corrupt a byte in the middle of the bundle and expect failure.
 	raw := buf.Bytes()
 	corrupt := bytes.Replace(raw, []byte("\"cmd\""), []byte("\"xxx\""), 1)
 	if _, err := VerifyBundle(bytes.NewReader(corrupt)); err == nil {

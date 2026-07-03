@@ -39,7 +39,7 @@ func newServeCmd(configDir *string) *cobra.Command {
 				dashboard = web.Handler()
 			}
 			srv := server.New(mgr, dashboard, nil)
-			// Serve the MCP streamable-HTTP transport at /mcp alongside REST.
+			// MCP streamable-HTTP lives at /mcp alongside REST.
 			mcpSrv := mcp.NewServer(mgr)
 			srv.MCP = mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return mcpSrv }, nil)
 
@@ -76,7 +76,6 @@ func newServeCmd(configDir *string) *cobra.Command {
 	return cmd
 }
 
-// resolveConfigDir mirrors loadProfile's --config-dir / env fallback.
 func resolveConfigDir(configDir string) string {
 	if configDir == "" {
 		return os.Getenv("RUNEWARD_CONFIG_DIR")
@@ -128,7 +127,6 @@ func newMCPCmd(configDir *string) *cobra.Command {
 				}
 			}
 
-			// stdio transport (default).
 			return mcpSrv.Run(cmd.Context(), &mcpsdk.StdioTransport{})
 		},
 	}

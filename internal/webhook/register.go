@@ -13,11 +13,10 @@ import (
 // configName is the shared name of the self-registered webhook configurations.
 const configName = "runeward.dev"
 
-// Register upserts the ValidatingWebhookConfiguration and
-// MutatingWebhookConfiguration that route runeward Sandbox/Fleet admission to
-// the given Service. caPEM is published as each webhook's caBundle so the API
-// server trusts the self-signed serving certificate. Both configurations are
-// created if absent and updated in place otherwise.
+// Register upserts the validating and mutating webhook configurations that
+// route Sandbox/Fleet admission to the given Service. caPEM is published as
+// each webhook's caBundle so the API server trusts the self-signed serving
+// certificate.
 func Register(ctx context.Context, clientset kubernetes.Interface, caPEM []byte, service, namespace string) error {
 	if err := registerValidating(ctx, clientset, caPEM, service, namespace); err != nil {
 		return fmt.Errorf("register validating webhook: %w", err)
@@ -28,9 +27,8 @@ func Register(ctx context.Context, clientset kubernetes.Interface, caPEM []byte,
 	return nil
 }
 
-// webhookRules matches CREATE/UPDATE on the namespaced Sandbox/Fleet resources
-// and the cluster-scoped ClusterSandbox/ClusterFleet resources, so ClusterPolicy
-// governs org-shared cells as well.
+// webhookRules matches CREATE/UPDATE on the namespaced Sandbox/Fleet and
+// cluster-scoped ClusterSandbox/ClusterFleet resources.
 func webhookRules() []admissionregistrationv1.RuleWithOperations {
 	namespaced := admissionregistrationv1.NamespacedScope
 	cluster := admissionregistrationv1.ClusterScope

@@ -81,7 +81,6 @@ async function api(method, path, body) {
     }
   }
   if (!res.ok) {
-    // Return structured errors (403 deny, 202 handled by caller before this)
     throw new ApiError(res.status, data);
   }
   return { status: res.status, data };
@@ -183,7 +182,6 @@ async function loadSandboxes() {
     // don't spam toast on poll; health badge covers offline
   }
   renderSandboxList();
-  // If selected sandbox disappeared, deselect.
   if (state.selected && !state.sandboxes.find((s) => s.id === state.selected)) {
     selectSandbox(null);
   }
@@ -340,7 +338,6 @@ async function loadFleets() {
     // don't spam toast on poll; health badge covers offline
   }
   renderFleetList();
-  // If selected fleet disappeared, deselect.
   if (state.fleetSelected && !state.fleets.find((f) => f.id === state.fleetSelected)) {
     selectFleet(null);
   }
@@ -634,8 +631,7 @@ function activateTab(name, force = false) {
     ensureTerminal();
     connectTerminal();
   } else {
-    // keep socket alive only while terminal tab visible to save resources
-    // (we tear it down when leaving terminal)
+    // only keep the socket alive while the terminal tab is visible
     teardownTerminalSocket();
   }
 
@@ -681,7 +677,6 @@ function ensureTerminal() {
   state.term = term;
   state.fitAddon = fit;
 
-  // Resize handling: fit on window resize and push dims to server.
   window.addEventListener("resize", debounce(fitAndResize, 120));
   $("#term-reconnect").addEventListener("click", () => connectTerminal(true));
 }

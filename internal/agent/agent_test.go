@@ -10,13 +10,10 @@ import (
 	"testing"
 )
 
-// newTestServer returns an httptest.Server backed by a fresh Server rooted at a
-// temp dir, plus the root path.
 func newTestServer(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
 	root := t.TempDir()
-	// Resolve symlinks so macOS /var -> /private/var does not cause the
-	// server's absolute root to differ from t.TempDir()'s value.
+	// Resolve symlinks so macOS /var -> /private/var doesn't skew the root.
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
@@ -26,8 +23,6 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 	return ts, root
 }
 
-// post issues a POST with a JSON body and decodes the JSON response into out (if
-// non-nil). It returns the HTTP status code.
 func post(t *testing.T, ts *httptest.Server, path string, body any, out any) int {
 	t.Helper()
 	buf, err := json.Marshal(body)
@@ -81,7 +76,6 @@ func TestFileWriteReadRoundTrip(t *testing.T) {
 		t.Fatalf("bytes = %d, want %d", wr.Bytes, len("hello world"))
 	}
 
-	// Verify nested dirs were created on disk.
 	if _, err := os.Stat(filepath.Join(root, "nested", "dir", "hello.txt")); err != nil {
 		t.Fatalf("nested file not created: %v", err)
 	}
@@ -101,7 +95,6 @@ func TestFileEditFirstVsAll(t *testing.T) {
 
 	post(t, ts, "/v1/file/write", fileWriteRequest{Path: "e.txt", Content: "foo foo foo"}, nil)
 
-	// Replace first only.
 	var edit fileEditResponse
 	status := post(t, ts, "/v1/file/edit", fileEditRequest{Path: "e.txt", Old: "foo", New: "bar"}, &edit)
 	if status != http.StatusOK {
@@ -116,7 +109,6 @@ func TestFileEditFirstVsAll(t *testing.T) {
 		t.Fatalf("content = %q, want %q", rd.Content, "bar foo foo")
 	}
 
-	// Replace all remaining.
 	status = post(t, ts, "/v1/file/edit", fileEditRequest{Path: "e.txt", Old: "foo", New: "baz", All: true}, &edit)
 	if status != http.StatusOK {
 		t.Fatalf("edit-all status = %d, want 200", status)
@@ -226,7 +218,6 @@ func TestResolveDirectly(t *testing.T) {
 	if got != want {
 		t.Fatalf("resolve = %q, want %q", got, want)
 	}
-	// The root itself resolves.
 	if _, err := s.resolve("."); err != nil {
 		t.Fatalf("resolve(.) unexpected error: %v", err)
 	}

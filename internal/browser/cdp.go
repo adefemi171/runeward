@@ -9,19 +9,13 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// defaultCallTimeout bounds how long a single CDP method call waits for its
-// matching response before giving up.
+// defaultCallTimeout bounds how long a CDP call waits for its response.
 const defaultCallTimeout = 30 * time.Second
 
-// Client is a minimal Chrome DevTools Protocol client speaking to a single
-// page-level DevTools WebSocket endpoint.
-//
-// It sends method calls with monotonically increasing integer ids and matches
-// responses by id, while dispatching unsolicited events (e.g.
-// Page.loadEventFired) to one-shot subscribers. A single background read loop
-// demultiplexes the socket, so the Client is safe for sequential use from one
-// goroutine; concurrent calls are serialized only by the underlying pending
-// map and are not the intended usage.
+// Client is a minimal Chrome DevTools Protocol client for a single page-level
+// DevTools WebSocket. Calls are matched to responses by id; unsolicited events
+// go to one-shot subscribers. A single background read loop demultiplexes the
+// socket. Intended for sequential use from one goroutine.
 type Client struct {
 	conn *websocket.Conn
 
@@ -40,8 +34,7 @@ type Client struct {
 	done chan struct{} // closed when the read loop exits
 }
 
-// cdpMessage is the envelope for both requests and responses/events on the
-// DevTools socket.
+// cdpMessage is the envelope for requests, responses, and events.
 type cdpMessage struct {
 	ID     int             `json:"id,omitempty"`
 	Method string          `json:"method,omitempty"`
@@ -71,8 +64,7 @@ type evalResponse struct {
 	} `json:"exceptionDetails"`
 }
 
-// Dial connects a CDP Client to a page-level DevTools WebSocket URL (as found
-// in the target's webSocketDebuggerUrl).
+// Dial connects a Client to a page-level DevTools WebSocket URL.
 func Dial(wsURL string) (*Client, error) {
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
@@ -82,7 +74,7 @@ func Dial(wsURL string) (*Client, error) {
 }
 
 // NewClient wraps an already-connected DevTools WebSocket and starts its read
-// loop. It is exported primarily so tests can supply a fake CDP server.
+// loop. Exported so tests can supply a fake CDP server.
 func NewClient(conn *websocket.Conn) *Client {
 	c := &Client{
 		conn:    conn,
@@ -95,7 +87,7 @@ func NewClient(conn *websocket.Conn) *Client {
 	return c
 }
 
-// Close tears down the DevTools connection; the read loop exits as a result.
+// Close closes the connection, which also stops the read loop.
 func (c *Client) Close() error {
 	return c.conn.Close()
 }
@@ -203,9 +195,8 @@ func (c *Client) call(method string, params map[string]any) (json.RawMessage, er
 	}
 }
 
-// subscribe registers a one-shot listener for the next occurrence of a CDP
-// event method. The caller must eventually drain the channel or call
-// unsubscribe to avoid a small leak.
+// subscribe registers a one-shot listener for the next occurrence of an event
+// method. Callers must drain the channel or unsubscribe to avoid a leak.
 func (c *Client) subscribe(method string) chan json.RawMessage {
 	ch := make(chan json.RawMessage, 1)
 	c.mu.Lock()
@@ -226,8 +217,8 @@ func (c *Client) unsubscribe(method string, ch chan json.RawMessage) {
 	}
 }
 
-// dispatchEvent delivers an event to all currently-registered subscribers for
-// its method and clears them (one-shot semantics).
+// dispatchEvent delivers an event to its subscribers and clears them
+// (one-shot semantics).
 func (c *Client) dispatchEvent(method string, params json.RawMessage) {
 	c.mu.Lock()
 	subs := c.subs[method]
@@ -242,8 +233,8 @@ func (c *Client) dispatchEvent(method string, params json.RawMessage) {
 }
 
 // Navigate enables the Page domain, navigates to url, and waits up to timeout
-// for Page.loadEventFired. A load-wait timeout is not treated as fatal: the
-// page is often still usable, so Navigate returns nil in that case.
+// for Page.loadEventFired. A load-wait timeout is not fatal (the page is often
+// still usable), so Navigate returns nil in that case.
 func (c *Client) Navigate(url string, timeout time.Duration) error {
 	if _, err := c.call("Page.enable", nil); err != nil {
 		return err
@@ -263,14 +254,12 @@ func (c *Client) Navigate(url string, timeout time.Duration) error {
 	case <-c.done:
 		return c.readErr()
 	case <-time.After(timeout):
-		// Best effort: proceed even if the load event never arrived.
 	}
 	return nil
 }
 
-// Eval runs expr via Runtime.evaluate (returnByValue, awaitPromise) and returns
-// its value as a string. String results are returned verbatim; other JSON
-// values (numbers, booleans, objects) are returned as their JSON encoding.
+// Eval runs expr via Runtime.evaluate and returns the value as a string.
+// Strings come back verbatim; other values as their JSON encoding.
 func (c *Client) Eval(expr string) (string, error) {
 	raw, err := c.call("Runtime.evaluate", map[string]any{
 		"expression":    expr,
@@ -344,7 +333,7 @@ func (c *Client) Screenshot() (string, error) {
 	return r.Data, nil
 }
 
-// Click finds selector and dispatches a click. It is implemented purely via
+// Click finds selector and dispatches a click. Implemented via
 // Runtime.evaluate to avoid depending on the DOM/Input CDP domains.
 func (c *Client) Click(selector string) error {
 	sel, err := jsString(selector)
@@ -363,9 +352,8 @@ func (c *Client) Click(selector string) error {
 	return nil
 }
 
-// Type finds selector, focuses it, sets its value, and dispatches input/change
-// events so frameworks observe the change. Also implemented via
-// Runtime.evaluate only.
+// Type focuses selector, sets its value, and dispatches input/change events
+// so frameworks observe the change.
 func (c *Client) Type(selector, text string) error {
 	sel, err := jsString(selector)
 	if err != nil {
@@ -425,8 +413,8 @@ func (c *Client) evalBool(expr string) (bool, error) {
 	return v == "true", nil
 }
 
-// jsString encodes s as a JavaScript string literal (via JSON, which is a
-// valid JS expression) so it can be safely embedded in an eval snippet.
+// jsString encodes s as a JS string literal (via JSON) so it can be safely
+// embedded in an eval snippet.
 func jsString(s string) (string, error) {
 	b, err := json.Marshal(s)
 	if err != nil {

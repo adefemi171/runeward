@@ -8,10 +8,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newAuditCmd provides offline audit utilities. The primary command verifies an
-// exported transcript bundle (from GET /v1/audit/export) with no access to the
-// running control plane — the bundle embeds the public key, so anyone can check
-// the hash chain and ed25519 signatures independently.
+// newAuditCmd provides offline audit tools. Verification needs no running
+// control plane; the exported bundle embeds the public key.
 func newAuditCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "audit",

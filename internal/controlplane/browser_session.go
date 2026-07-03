@@ -14,28 +14,24 @@ import (
 	"github.com/adefemi171/runeward/internal/profile"
 )
 
-// browserDriverBin is the in-sandbox CDP driver (cmd/runeward-browser) that the
-// default sandbox image ships on PATH alongside a Chromium binary.
+// browserDriverBin is the in-sandbox CDP driver (cmd/runeward-browser), shipped
+// on PATH in the default sandbox image.
 const browserDriverBin = "runeward-browser"
 
-// browserReadyTimeout bounds how long BrowserOpen waits for the driver's
-// control socket to accept a ping after launch.
+// browserReadyTimeout bounds how long BrowserOpen waits for the driver socket
+// to answer a ping.
 const browserReadyTimeout = 20 * time.Second
 
-// browserSession tracks one live in-sandbox browser driver: its id and the
-// control socket the driver listens on inside the sandbox.
+// browserSession tracks one live in-sandbox browser driver.
 type browserSession struct {
 	id     string
 	socket string
 }
 
-// BrowserOpen starts a stateful, CDP-driven browser session inside the sandbox
-// and returns its session id. The driver (`runeward-browser serve`) is launched
-// detached so this one-shot exec returns immediately; the profile's egress
-// proxy is threaded through via --proxy so browser traffic stays governed. The
-// open is gated by policy as tool "browser" (action "open") and audited; a deny
-// or pending-approval verdict is returned in the ToolResult without starting a
-// session.
+// BrowserOpen starts a stateful CDP browser session in the sandbox and returns
+// its id. The driver is launched detached; the egress proxy is threaded through
+// via --proxy. Gated by policy as tool "browser" (action "open"), so a deny or
+// pending verdict comes back in the ToolResult without starting a session.
 func (m *Manager) BrowserOpen(ctx context.Context, id string) (sessionID string, res *ToolResult, err error) {
 	sess, err := m.session(id)
 	if err != nil {
@@ -85,11 +81,9 @@ func (m *Manager) BrowserOpen(ctx context.Context, id string) (sessionID string,
 	return sid, res, nil
 }
 
-// BrowserAct sends one action to a live browser session and returns the
-// governed result. The action runs through the full policy/guardrail/audit path
-// as tool "browser". The driver's structured reply is unpacked into the
-// ToolResult: Stdout carries the textual value (or base64 screenshot) and a
-// driver-level failure surfaces in Reason.
+// BrowserAct sends one action to a live browser session through the governed
+// path. Stdout carries the value (or base64 screenshot); a driver-level failure
+// surfaces in Reason.
 func (m *Manager) BrowserAct(ctx context.Context, id, sessionID string, cmd browser.Command) (*ToolResult, error) {
 	sess, err := m.session(id)
 	if err != nil {
@@ -127,8 +121,7 @@ func (m *Manager) BrowserAct(ctx context.Context, id, sessionID string, cmd brow
 		return res, nil
 	}
 
-	// Unpack the driver's Result. `call` exits non-zero on a driver-level
-	// failure but still prints the Result JSON to stdout.
+	// `call` exits non-zero on driver failure but still prints Result JSON.
 	var out browser.Result
 	if e := json.Unmarshal([]byte(strings.TrimSpace(res.Stdout)), &out); e == nil {
 		res.Stdout = out.Value
@@ -142,8 +135,7 @@ func (m *Manager) BrowserAct(ctx context.Context, id, sessionID string, cmd brow
 	return res, nil
 }
 
-// BrowserClose tells the driver to shut down (closing Chromium and removing its
-// socket) and forgets the session. It is best-effort and always removes local
+// BrowserClose shuts down the driver (best-effort) and always removes local
 // bookkeeping.
 func (m *Manager) BrowserClose(ctx context.Context, id, sessionID string) error {
 	sess, err := m.session(id)
@@ -166,8 +158,8 @@ func (m *Manager) BrowserClose(ctx context.Context, id, sessionID string) error 
 	return nil
 }
 
-// browserWaitReady polls the driver's control socket with a ping until it
-// answers or the readiness timeout elapses.
+// browserWaitReady pings the driver socket until it answers or the timeout
+// elapses.
 func (m *Manager) browserWaitReady(ctx context.Context, sess *Session, id, socket string) error {
 	ping, _ := json.Marshal(browser.Command{Action: "ping"})
 	deadline := time.Now().Add(browserReadyTimeout)
@@ -191,7 +183,6 @@ func (m *Manager) browserWaitReady(ctx context.Context, sess *Session, id, socke
 	}
 }
 
-// browser returns the tracked browser session by id.
 func (s *Session) browser(sessionID string) (*browserSession, error) {
 	s.browserMu.Lock()
 	defer s.browserMu.Unlock()
@@ -202,7 +193,6 @@ func (s *Session) browser(sessionID string) (*browserSession, error) {
 	return bs, nil
 }
 
-// randID returns a short random hex id for a browser session.
 func randID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])

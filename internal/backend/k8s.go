@@ -27,10 +27,8 @@ import (
 // k8sContainer is the fixed name of the sandbox container within each pod.
 const k8sContainer = "sandbox"
 
-// K8s is a sandbox backend that provisions one Pod (+ workspace PVC) per
-// sandbox via client-go. It manages Pods directly rather than through a custom
-// controller; a Sandbox CRD + controller can wrap this later for declarative
-// management. Everything above the Backend interface is unaffected.
+// K8s provisions one Pod (plus a workspace PVC) per sandbox via client-go,
+// managing Pods directly rather than through a controller.
 type K8s struct {
 	client    kubernetes.Interface
 	rest      *rest.Config
@@ -38,10 +36,8 @@ type K8s struct {
 }
 
 // NewK8s builds the Kubernetes backend from the ambient kubeconfig.
-//
-// The context can be pinned via $RUNEWARD_KUBE_CONTEXT (so it never
-// accidentally targets your current-context cluster) and the namespace via
-// $RUNEWARD_K8S_NAMESPACE (default "runeward").
+// $RUNEWARD_KUBE_CONTEXT pins the context; $RUNEWARD_K8S_NAMESPACE overrides
+// the default "runeward" namespace.
 func NewK8s() (*K8s, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	overrides := &clientcmd.ConfigOverrides{}
@@ -88,7 +84,6 @@ func (k *K8s) Create(ctx context.Context, spec Spec) (*Sandbox, error) {
 		labelKey(labelID):      id,
 	}
 
-	// Workspace PVC.
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: pvcName, Labels: labels},
 		Spec: corev1.PersistentVolumeClaimSpec{
@@ -115,18 +110,10 @@ func (k *K8s) Create(ctx context.Context, spec Spec) (*Sandbox, error) {
 		resources.Limits[corev1.ResourceCPU] = *resource.NewMilliQuantity(spec.Resources.NanoCPUs/1_000_000, resource.DecimalSI)
 	}
 
-	// Deny-by-default profiles get an egress-proxy sidecar in the same pod. The
-	// sidecar shares the pod network namespace, so the sandbox routes egress
-	// through it. The allowlist policy is delivered via a ConfigMap mounted into
-	// the sidecar.
-	//
-	// Two enforcement modes are supported:
-	//   - cooperative (default): the sandbox is pointed at a forward proxy on
-	//     localhost:8888 via HTTP(S)_PROXY. An app can bypass it by ignoring the
-	//     proxy env vars.
-	//   - strict ([network] enforce = "strict"): a privileged init container
-	//     installs iptables rules that transparently redirect all egress to the
-	//     proxy, so it cannot be bypassed.
+	// Deny-by-default profiles get an egress-proxy sidecar; the policy arrives
+	// via a mounted ConfigMap. Cooperative mode (default) points the sandbox at
+	// the proxy with HTTP(S)_PROXY, which an app can ignore. Strict mode adds an
+	// iptables init container that redirects all egress, so it can't be bypassed.
 	var extraContainers []corev1.Container
 	var extraInit []corev1.Container
 	var extraVolumes []corev1.Volume
@@ -158,8 +145,7 @@ func (k *K8s) Create(ctx context.Context, spec Spec) (*Sandbox, error) {
 		if spec.Network.StrictEgress() {
 			redirectPort := strconv.Itoa(egress.StrictRedirectPort)
 			proxyUID := int64(egress.StrictProxyUID)
-			// Init container installs the iptables REDIRECT rules (needs
-			// NET_ADMIN and runs before the app container starts).
+			// Installs the iptables REDIRECT rules; needs NET_ADMIN.
 			extraInit = append(extraInit, corev1.Container{
 				Name:            "egress-init",
 				Image:           img,
@@ -174,8 +160,8 @@ func (k *K8s) Create(ctx context.Context, spec Spec) (*Sandbox, error) {
 					Capabilities: &corev1.Capabilities{Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"}},
 				},
 			})
-			// Transparent proxy runs as the exempt uid so its own upstream
-			// traffic is not redirected back to itself.
+			// Runs as the exempt uid so its own upstream traffic isn't
+			// redirected back to itself.
 			extraContainers = append(extraContainers, corev1.Container{
 				Name:            "egress",
 				Image:           img,
@@ -184,7 +170,7 @@ func (k *K8s) Create(ctx context.Context, spec Spec) (*Sandbox, error) {
 				SecurityContext: &corev1.SecurityContext{RunAsUser: int64Ptr(proxyUID)},
 				VolumeMounts:    []corev1.VolumeMount{policyMount},
 			})
-			// No HTTP(S)_PROXY env: enforcement is transparent at L3.
+			// No HTTP(S)_PROXY env; enforcement is transparent at L3.
 		} else {
 			extraContainers = append(extraContainers, corev1.Container{
 				Name:            "egress",
@@ -290,7 +276,7 @@ func (k *K8s) Exec(ctx context.Context, id string, req ExecRequest) (*ExecResult
 
 	res := &ExecResult{Stdout: stdout.String(), Stderr: stderr.String(), Duration: time.Since(start)}
 	if err != nil {
-		// Non-zero exit surfaces as an error carrying the code.
+		// A non-zero exit surfaces as an error carrying the code.
 		if ec, ok := err.(interface{ ExitStatus() int }); ok {
 			res.ExitCode = ec.ExitStatus()
 			return res, nil
@@ -367,10 +353,9 @@ func (k *K8s) CopyFiles(ctx context.Context, id string, files []profile.File) er
 	return nil
 }
 
-// seedWorkspace copies the contents of srcDir into the pod's workdir by
-// streaming a tar to `tar -xf -` inside the container. Extraction runs as the
-// pod's user, so files are owned by the sandbox user; the host directory is
-// only read.
+// seedWorkspace streams srcDir as a tar to `tar -xf -` in the container.
+// Extraction runs as the pod's user so files end up owned by the sandbox
+// user; the host directory is only read.
 func (k *K8s) seedWorkspace(ctx context.Context, id, workdir, srcDir string) error {
 	if fi, err := os.Stat(srcDir); err != nil || !fi.IsDir() {
 		return fmt.Errorf("copy_from %q must be an existing directory: %v", srcDir, err)
@@ -622,8 +607,7 @@ func (t *termSizeQueue) Next() *remotecommand.TerminalSize {
 
 func labelKey(k string) string { return k }
 
-// egressConfigMapName is the name of the per-sandbox ConfigMap holding the
-// egress allowlist policy consumed by the sidecar proxy.
+// egressConfigMapName names the per-sandbox ConfigMap holding the egress policy.
 func egressConfigMapName(id string) string { return "runeward-egress-" + id }
 
 func runtimeClassPtr(s string) *string {
@@ -637,12 +621,10 @@ func boolPtr(b bool) *bool { return &b }
 
 func int64Ptr(i int64) *int64 { return &i }
 
-// egressPullPolicy picks the pull policy for the injected egress sidecar/init
-// image. The egress image is typically built locally and preloaded into the
-// node (e.g. OrbStack/kind share the Docker store), so it must NOT force a
-// registry pull — which Kubernetes would otherwise do for a ":latest" tag.
-// $RUNEWARD_EGRESS_PULL_POLICY (Always|Never|IfNotPresent) overrides the
-// default of IfNotPresent for setups that push the image to a real registry.
+// egressPullPolicy picks the pull policy for the egress sidecar/init image.
+// The image is usually built locally and preloaded into the node, so don't
+// force the registry pull Kubernetes defaults to for ":latest" tags.
+// $RUNEWARD_EGRESS_PULL_POLICY (Always|Never|IfNotPresent) overrides.
 func egressPullPolicy(_ string) corev1.PullPolicy {
 	switch corev1.PullPolicy(os.Getenv("RUNEWARD_EGRESS_PULL_POLICY")) {
 	case corev1.PullAlways:
@@ -654,8 +636,8 @@ func egressPullPolicy(_ string) corev1.PullPolicy {
 	}
 }
 
-// snapshotPath returns the on-disk location for a k8s snapshot tarball,
-// mirroring the docker backend's snapshot directory.
+// snapshotPath returns the tarball location, in the same cache dir the docker
+// backend uses.
 func snapshotPath(id string) string {
 	cache, err := os.UserCacheDir()
 	if err != nil {

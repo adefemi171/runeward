@@ -67,7 +67,6 @@ func newEnterCmd(configDir *string) *cobra.Command {
 	return cmd
 }
 
-// runInner executes an explicit command non-interactively and streams output.
 func runInner(ctx context.Context, be backend.Backend, id string, command []string, workdir string) error {
 	res, err := be.Exec(ctx, id, backend.ExecRequest{Command: command, Workdir: workdir})
 	if err != nil {
@@ -81,7 +80,6 @@ func runInner(ctx context.Context, be backend.Backend, id string, command []stri
 	return nil
 }
 
-// attachShell wires the local terminal to an interactive shell in the sandbox.
 func attachShell(ctx context.Context, be backend.Backend, id string) error {
 	stdinFd := int(os.Stdin.Fd())
 	isTTY := term.IsTerminal(stdinFd)

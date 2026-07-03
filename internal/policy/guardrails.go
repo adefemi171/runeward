@@ -8,37 +8,17 @@ import (
 	"github.com/adefemi171/runeward/internal/profile"
 )
 
-// Sentinel errors returned by [Guard]. Callers should compare with
-// [errors.Is].
+// Sentinel errors returned by [Guard].
 var (
-	// ErrWallClock is returned once the session wall-clock deadline passes.
-	ErrWallClock = errors.New("policy: wall-clock deadline exceeded")
-	// ErrMaxExecs is returned once the exec budget is exhausted.
-	ErrMaxExecs = errors.New("policy: max execs exceeded")
-	// ErrEgressBudget is returned once the egress request budget is
-	// exhausted.
+	ErrWallClock    = errors.New("policy: wall-clock deadline exceeded")
+	ErrMaxExecs     = errors.New("policy: max execs exceeded")
 	ErrEgressBudget = errors.New("policy: egress budget exceeded")
-	// ErrLoopDetected is returned once a non-converging failure loop trips
-	// the loop detector.
 	ErrLoopDetected = errors.New("policy: runaway loop detected")
 )
 
-// Guard enforces per-session cost and loop guardrails derived from
-// [profile.Limits]. It is safe for concurrent use.
-//
-// All limits are opt-in: a zero/empty value in the source [profile.Limits]
-// disables that particular guard (unlimited execs, no wall-clock, and so on).
-//
-// Typical use:
-//
-//	g, err := NewGuard(limits)
-//	// ...
-//	g.Start()
-//	for _, step := range plan {
-//	    if err := g.CheckExec(); err != nil { return err }
-//	    err := run(step)
-//	    g.RecordOutcome(step.Key(), err != nil)
-//	}
+// Guard enforces per-session cost and loop guardrails from profile.Limits.
+// All limits are opt-in: a zero/empty value disables that guard. Safe for
+// concurrent use.
 type Guard struct {
 	wallClock   time.Duration // 0 = disabled
 	maxExecs    int           // 0 = unlimited
@@ -58,9 +38,8 @@ type Guard struct {
 	failures  map[string][]time.Time // sliding window of failure timestamps per key
 }
 
-// NewGuard builds a [Guard] from limits. WallClock and LoopWindow are parsed
-// with [time.ParseDuration]; an empty string leaves that guard disabled. An
-// error is returned if either duration string is present but unparseable.
+// NewGuard builds a Guard from limits. It errors if WallClock or LoopWindow
+// is set but not a valid duration string.
 func NewGuard(limits profile.Limits) (*Guard, error) {
 	var (
 		wall time.Duration
@@ -88,8 +67,8 @@ func NewGuard(limits profile.Limits) (*Guard, error) {
 	}, nil
 }
 
-// Start records the session start time used for wall-clock enforcement. It is
-// safe to call more than once; only the first call takes effect.
+// Start records the session start time for wall-clock enforcement. Only the
+// first call takes effect.
 func (g *Guard) Start() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -99,12 +78,9 @@ func (g *Guard) Start() {
 	}
 }
 
-// CheckExec must be called before each tool invocation. It enforces, in order:
-// the wall-clock deadline, a previously tripped loop, and the exec budget,
+// CheckExec must be called before each tool invocation. It checks the
+// wall-clock deadline, a tripped loop, and the exec budget in that order,
 // incrementing the exec counter only when the call is permitted.
-//
-// It returns [ErrWallClock], [ErrLoopDetected], or [ErrMaxExecs] respectively,
-// or nil when the exec may proceed.
 func (g *Guard) CheckExec() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -124,9 +100,8 @@ func (g *Guard) CheckExec() error {
 	return nil
 }
 
-// CheckEgress must be called before each outbound request. It enforces the
-// egress budget, incrementing the egress counter only when permitted, and
-// returns [ErrEgressBudget] once the budget is exhausted.
+// CheckEgress must be called before each outbound request. It returns
+// ErrEgressBudget once the budget is exhausted.
 func (g *Guard) CheckEgress() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -138,14 +113,10 @@ func (g *Guard) CheckEgress() error {
 	return nil
 }
 
-// RecordOutcome records the result of an action identified by key. Successful
-// outcomes (failed == false) clear the key's failure window, treating any
-// success as convergence. Failures append to a sliding window; once a key
-// accumulates loopThreshold failures within loopWindow the loop detector trips
-// and stays tripped until [Guard.Reset].
-//
-// Loop detection is disabled (this method only bookkeeps) when either
-// loopWindow or loopThreshold is zero.
+// RecordOutcome records the result of an action identified by key. A success
+// clears the key's failure window; failures accumulate in a sliding window,
+// and once a key hits loopThresh failures within loopWindow the detector
+// trips and stays tripped until Reset.
 func (g *Guard) RecordOutcome(key string, failed bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -161,7 +132,7 @@ func (g *Guard) RecordOutcome(key string, failed bool) {
 	now := g.now()
 	cutoff := now.Add(-g.loopWindow)
 
-	// Prune timestamps that have aged out of the sliding window.
+	// Drop timestamps that have aged out of the window.
 	times := g.failures[key]
 	kept := times[:0]
 	for _, t := range times {
@@ -178,16 +149,16 @@ func (g *Guard) RecordOutcome(key string, failed bool) {
 	}
 }
 
-// LoopTripped reports whether a runaway failure loop has been detected and, if
-// so, the key responsible.
+// LoopTripped reports whether a failure loop has been detected and, if so,
+// the key responsible.
 func (g *Guard) LoopTripped() (bool, string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.tripped, g.loopKey
 }
 
-// Reset clears counters, the failure windows, and any tripped loop state so the
-// same Guard can be reused for a fresh session. The parsed limits are retained.
+// Reset clears counters, failure windows, and tripped state so the Guard can
+// be reused for a fresh session. The parsed limits are retained.
 func (g *Guard) Reset() {
 	g.mu.Lock()
 	defer g.mu.Unlock()

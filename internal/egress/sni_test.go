@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// captureClientHello returns the raw bytes of the TLS ClientHello that the
-// stdlib client emits for the given ServerName.
+// captureClientHello returns the ClientHello bytes the stdlib client emits
+// for serverName.
 func captureClientHello(t *testing.T, serverName string) []byte {
 	t.Helper()
 	c1, c2 := net.Pipe()
@@ -22,8 +22,8 @@ func captureClientHello(t *testing.T, serverName string) []byte {
 		client := tls.Client(c1, &tls.Config{ServerName: serverName, InsecureSkipVerify: true})
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		// Handshake will block after writing ClientHello; we only need the
-		// bytes, so ignore the resulting error.
+		// The handshake blocks after writing ClientHello; we only need the
+		// bytes, so ignore the error.
 		_ = client.HandshakeContext(ctx)
 	}()
 

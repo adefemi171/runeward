@@ -14,8 +14,7 @@ import (
 	"github.com/adefemi171/runeward/internal/profile"
 )
 
-// fakeBackend is an in-memory Backend that echoes commands, used to exercise the
-// governed loop without a real container runtime.
+// fakeBackend echoes commands so tests can run without a container runtime.
 type fakeBackend struct {
 	execs int
 }
@@ -28,8 +27,6 @@ func (f *fakeBackend) Create(ctx context.Context, spec backend.Spec) (*backend.S
 
 func (f *fakeBackend) Exec(ctx context.Context, id string, req backend.ExecRequest) (*backend.ExecResult, error) {
 	f.execs++
-	// Emulate a nonzero exit for a "false" command; echo back the joined args
-	// otherwise so tests can assert on stdout.
 	if len(req.Command) > 0 && req.Command[0] == "false" {
 		return &backend.ExecResult{ExitCode: 1, Stderr: "failed", Duration: time.Millisecond}, nil
 	}
@@ -54,8 +51,6 @@ func (f *fakeBackend) Restore(ctx context.Context, ref backend.SnapshotRef) (*ba
 func (f *fakeBackend) Kill(ctx context.Context, id string) error           { return nil }
 func (f *fakeBackend) List(ctx context.Context) ([]backend.Sandbox, error) { return nil, nil }
 
-// newTestManager builds a Manager with a temp ledger and a single injected
-// session backed by fakeBackend.
 func newTestManager(t *testing.T, rules []profile.PolicyRule, wait time.Duration) (*Manager, *fakeBackend) {
 	t.Helper()
 	l, err := ledger.Open(filepath.Join(t.TempDir(), "ledger.jsonl"))

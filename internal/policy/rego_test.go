@@ -6,7 +6,7 @@ import (
 	"github.com/adefemi171/runeward/internal/profile"
 )
 
-// objectModule returns object-shaped decisions {"verdict": ..., "reason": ...}.
+// objectModule returns object-shaped decisions.
 const objectModule = `package runeward
 
 default decision := {"verdict": "allow"}
@@ -22,7 +22,7 @@ decision := {"verdict": "require-approval", "reason": "review /etc"} if {
 }
 `
 
-// stringModule returns bare string verdicts to prove both result shapes work.
+// stringModule returns bare string verdicts.
 const stringModule = `package runeward
 
 default decision := "allow"
@@ -58,8 +58,8 @@ func TestRegoEngineObjectDecisions(t *testing.T) {
 			if dec.Reason != tt.wantReason {
 				t.Errorf("reason = %q, want %q", dec.Reason, tt.wantReason)
 			}
-			// A matched (non-default) decision synthesizes a Rule; the
-			// default-allow fallthrough leaves Rule nil.
+			// A matched decision synthesizes a Rule; the default
+			// fallthrough leaves it nil.
 			if tt.wantVerd != profile.VerdictAllow || tt.name != "default allow" {
 				if dec.Rule == nil {
 					t.Errorf("expected synthesized Rule, got nil")

@@ -11,9 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// fakeCDPServer stands up a WebSocket server that speaks just enough CDP to
-// exercise the client: Page.enable, Page.navigate (followed by a
-// Page.loadEventFired event), and Runtime.evaluate (returns a canned string).
+// fakeCDPServer speaks just enough CDP to exercise the client.
 func fakeCDPServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	upgrader := websocket.Upgrader{
@@ -105,8 +103,6 @@ func TestClientNavigateEvalText(t *testing.T) {
 	}
 }
 
-// TestClientEvalError verifies that a Runtime.evaluate exceptionDetails payload
-// surfaces as an error.
 func TestClientEvalError(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

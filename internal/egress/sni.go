@@ -6,14 +6,9 @@ import (
 	"strings"
 )
 
-// ExtractSNI parses the Server Name Indication (SNI) host from the bytes of a
-// TLS ClientHello record. It returns the host and true on success, or "" and
-// false if data is not a TLS ClientHello or carries no SNI extension. Only the
-// leading record is inspected; data may contain trailing bytes.
-//
-// This is used by the transparent proxy to recover the destination hostname
-// from an intercepted TLS connection whose original destination is only known
-// by IP.
+// ExtractSNI parses the SNI host from a TLS ClientHello, returning "" and
+// false if data isn't a ClientHello or has no SNI extension. The transparent
+// proxy uses it to recover the hostname when only the destination IP is known.
 func ExtractSNI(data []byte) (string, bool) {
 	// TLS record header: type(1) version(2) length(2). Handshake = 22.
 	if len(data) < 5 || data[0] != 0x16 {
@@ -112,11 +107,10 @@ func ExtractSNI(data []byte) (string, bool) {
 	return "", false
 }
 
-// httpHostFromPeek extracts the Host header value from the leading bytes of a
-// plain HTTP request. It returns the host (without any trailing port) and true
-// when data looks like an HTTP request carrying a Host header.
+// httpHostFromPeek extracts the Host header (without port) from the leading
+// bytes of a plain HTTP request.
 func httpHostFromPeek(data []byte) (string, bool) {
-	// Only treat data as HTTP if it begins with a known method token.
+	// Only treat data as HTTP if it starts with a known method token.
 	methods := []string{"GET ", "POST ", "PUT ", "HEAD ", "DELETE ", "PATCH ", "OPTIONS ", "TRACE ", "CONNECT "}
 	isHTTP := false
 	for _, m := range methods {
@@ -128,7 +122,6 @@ func httpHostFromPeek(data []byte) (string, bool) {
 	if !isHTTP {
 		return "", false
 	}
-	// Scan header lines up to the end of headers.
 	for _, line := range bytes.Split(data, []byte("\r\n")) {
 		if len(line) == 0 {
 			break

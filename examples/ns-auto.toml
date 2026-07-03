@@ -1,20 +1,19 @@
-# A worked example: an autonomous-agent profile with a deny-by-default contract.
-# Sanitized template — real operator profiles live in ~/.config/runeward/.
+# A worked autonomous-agent profile with a deny-by-default contract. Sanitized
+# template; real operator profiles live in ~/.config/runeward/.
 #
 #   runeward --config-dir examples print ns-auto
 #
-# It is the custom-fit principle made concrete: the agent gets a toolchain, a
-# handful of credentials, and a short list of hostnames it may talk to — and
-# everything else is denied by default.
+# The agent gets a toolchain, a handful of credentials, and a short list of
+# hostnames it may talk to. Everything else is denied by default.
 
 [host]
 type    = "container"
 image   = "ghcr.io/adefemi171/runeward-sandbox:latest"
-user    = "agent"        # locked-down, non-root — load-bearing
+user    = "agent"        # non-root
 workdir = "/workspace"   # starts empty: clone fresh each session
 
-# The agent's own policy file, projected root:root mode 0444 — immutable from
-# the (non-root) session.
+# The agent's own policy file, projected root:root mode 0444 so the non-root
+# session can't edit it.
 [[file]]
 path    = "/etc/claude-code/managed-settings.json"
 mode    = "0444"

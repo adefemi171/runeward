@@ -1,7 +1,6 @@
-// Package manifests embeds the runeward Kubernetes install artifacts (CRDs and
-// the controller install bundle) so `runeward up` can apply them without any
-// external files. The same YAML is the canonical source for the copies shipped
-// under deploy/ (kept in sync by a drift test).
+// Package manifests embeds the CRDs and controller install bundle for
+// `runeward up`. This YAML is canonical; the copies under deploy/ are kept in
+// sync by a drift test.
 package manifests
 
 import (
@@ -16,8 +15,8 @@ var files embed.FS
 // CRDs returns the CustomResourceDefinition documents, sorted by filename.
 func CRDs() ([][]byte, error) { return read("crds") }
 
-// Install returns the namespace/RBAC/Deployment documents that make up the
-// controller install bundle, sorted by filename (numeric prefixes order them).
+// Install returns the controller install bundle documents, sorted by filename
+// (numeric prefixes order them).
 func Install() ([][]byte, error) { return read("install") }
 
 func read(dir string) ([][]byte, error) {

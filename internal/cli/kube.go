@@ -8,10 +8,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// kubeConfig builds a Kubernetes REST config, preferring the in-cluster service
-// account (so the controller works when deployed as a Pod) and falling back to
-// the ambient kubeconfig. $RUNEWARD_KUBE_CONTEXT pins the context, matching the
-// convention used by the Kubernetes backend.
+// kubeConfig prefers the in-cluster config and falls back to the ambient
+// kubeconfig; $RUNEWARD_KUBE_CONTEXT pins the context.
 func kubeConfig() (*rest.Config, error) {
 	if cfg, err := rest.InClusterConfig(); err == nil {
 		return cfg, nil
@@ -28,7 +26,6 @@ func kubeConfig() (*rest.Config, error) {
 	return cfg, nil
 }
 
-// kubeNamespace returns the namespace the controller/installer operates in.
 func kubeNamespace() string {
 	if ns := os.Getenv("RUNEWARD_K8S_NAMESPACE"); ns != "" {
 		return ns

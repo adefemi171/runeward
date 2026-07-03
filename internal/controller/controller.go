@@ -1,11 +1,9 @@
-// Package controller implements a lightweight Kubernetes controller that
-// reconciles runeward Sandbox and Fleet custom resources onto the existing
-// control-plane Manager (which drives the Kubernetes backend).
+// Package controller reconciles runeward Sandbox and Fleet custom resources
+// onto the control-plane Manager.
 //
-// It intentionally avoids controller-runtime and code generation: it watches
-// the CRs with dynamic informers, reconciles through a work queue, and stores
-// the backing runeward ids in the resource's status. A finalizer guarantees the
-// underlying sandboxes/fleets are torn down when a CR is deleted.
+// It deliberately avoids controller-runtime: dynamic informers feed a work
+// queue, backing runeward ids live in status, and a finalizer guarantees
+// teardown of the underlying sandboxes/fleets on CR deletion.
 package controller
 
 import (
@@ -26,31 +24,29 @@ import (
 )
 
 const (
-	// Group is the API group served by the runeward CRDs.
+	// Group is the API group of the runeward CRDs.
 	Group = "runeward.dev"
 	// Version is the CRD API version.
 	Version = "v1alpha1"
-	// finalizer guards CR deletion until the backing resource is torn down.
+	// finalizer blocks CR deletion until the backing resource is torn down.
 	finalizer = "runeward.dev/finalizer"
 )
 
 var (
 	sandboxGVR = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "sandboxes"}
 	fleetGVR   = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "fleets"}
-	// Cluster-scoped variants for org-shared cells. They carry no namespace;
-	// the controller provisions the backing resources in its own namespace.
+	// Cluster-scoped variants carry no namespace; backing resources land in
+	// the controller's own namespace.
 	clusterSandboxGVR = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "clustersandboxes"}
 	clusterFleetGVR   = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "clusterfleets"}
 )
 
-// clusterScoped reports whether a GVR is a cluster-scoped resource (no
-// namespace on the dynamic client, watched cluster-wide).
 var clusterScoped = map[schema.GroupVersionResource]bool{
 	clusterSandboxGVR: true,
 	clusterFleetGVR:   true,
 }
 
-// item is a work-queue entry identifying one custom resource to reconcile.
+// item identifies one custom resource on the work queue.
 type item struct {
 	gvr schema.GroupVersionResource
 	key string // "namespace/name"
@@ -60,17 +56,15 @@ type item struct {
 type Controller struct {
 	mgr *controlplane.Manager
 	dyn dynamic.Interface
-	// factory watches the namespaced Sandbox/Fleet resources in the configured
-	// namespace; clusterFactory watches the cluster-scoped ClusterSandbox/
-	// ClusterFleet resources cluster-wide regardless of the configured scope.
+	// factory watches namespaced CRs in the configured namespace;
+	// clusterFactory watches the cluster-scoped ones cluster-wide.
 	factory        dynamicinformer.DynamicSharedInformerFactory
 	clusterFactory dynamicinformer.DynamicSharedInformerFactory
 	queue          workqueue.TypedRateLimitingInterface[item]
 	logger         *log.Logger
 }
 
-// New builds a Controller watching the given namespace ("" for all namespaces).
-// Cluster-scoped resources are always watched cluster-wide.
+// New builds a Controller watching the given namespace ("" for all).
 func New(mgr *controlplane.Manager, dyn dynamic.Interface, namespace string, logger *log.Logger) *Controller {
 	if logger == nil {
 		logger = log.Default()
@@ -95,7 +89,6 @@ func New(mgr *controlplane.Manager, dyn dynamic.Interface, namespace string, log
 	return c
 }
 
-// addInformer wires an informer for a GVR to enqueue reconcile items.
 func (c *Controller) addInformer(factory dynamicinformer.DynamicSharedInformerFactory, gvr schema.GroupVersionResource) {
 	inf := factory.ForResource(gvr).Informer()
 	enqueue := func(obj any) {
@@ -158,7 +151,6 @@ func (c *Controller) processNext(ctx context.Context) bool {
 	return true
 }
 
-// reconcile drives one custom resource toward its desired state.
 func (c *Controller) reconcile(ctx context.Context, it item) error {
 	ns, name, err := cache.SplitMetaNamespaceKey(it.key)
 	if err != nil {
@@ -217,7 +209,7 @@ func (c *Controller) reconcileSandbox(ctx context.Context, client dynamic.Resour
 		if _, ok := c.mgr.Sandbox(id); ok {
 			return nil
 		}
-		// Backing sandbox vanished (e.g. controller restart) — reprovision.
+		// Backing sandbox vanished (e.g. controller restart); reprovision.
 	}
 
 	profileName, _, _ := unstructured.NestedString(obj.Object, "spec", "profile")
@@ -305,7 +297,6 @@ func (c *Controller) setStatus(ctx context.Context, client dynamic.ResourceInter
 	return err
 }
 
-// fleetStatus projects a FleetView into CR status fields.
 func fleetStatus(phase string, v *controlplane.FleetView) map[string]any {
 	sandboxes := make([]any, len(v.Sandboxes))
 	for i, s := range v.Sandboxes {

@@ -22,12 +22,11 @@ import (
 	"k8s.io/client-go/restmapper"
 )
 
-// fieldManager identifies runeward as the owner of applied fields (SSA).
+// fieldManager is the server-side-apply owner for everything we apply.
 const fieldManager = "runeward-up"
 
-// newUpCmd installs runeward into the current cluster in one command: it applies
-// the CRDs and the controller bundle (namespace, RBAC, Deployment) using
-// server-side apply, so re-running it is idempotent.
+// newUpCmd installs the CRDs and controller bundle via server-side apply, so
+// re-running it is idempotent.
 func newUpCmd() *cobra.Command {
 	var image string
 	var crdsOnly bool
@@ -65,9 +64,8 @@ func newUpCmd() *cobra.Command {
 					return err
 				}
 			}
-			// Give discovery a moment to observe the freshly-registered CRDs by
-			// resetting the cached mapper before applying custom resources (the
-			// install bundle has none today, but keep the ordering correct).
+			// Reset the cached mapper so discovery sees the fresh CRDs before
+			// any custom resources get applied.
 			mapper.Reset()
 
 			if crdsOnly {
@@ -94,8 +92,8 @@ func newUpCmd() *cobra.Command {
 	return cmd
 }
 
-// applyDoc decodes a single YAML document and server-side-applies it. When
-// imageOverride is set, it is applied to any container images in the object.
+// applyDoc decodes one YAML document and server-side-applies it, optionally
+// overriding container images.
 func applyDoc(ctx context.Context, dyn dynamic.Interface, mapper *restmapper.DeferredDiscoveryRESTMapper, doc []byte, imageOverride string, out io.Writer) error {
 	if len(bytes.TrimSpace(doc)) == 0 {
 		return nil
@@ -146,8 +144,7 @@ func applyDoc(ctx context.Context, dyn dynamic.Interface, mapper *restmapper.Def
 
 func boolPtr(b bool) *bool { return &b }
 
-// overrideImages sets every container image (and initContainer image) on a
-// workload object to img.
+// overrideImages sets every container and initContainer image to img.
 func overrideImages(obj *unstructured.Unstructured, img string) {
 	for _, path := range [][]string{
 		{"spec", "template", "spec", "containers"},

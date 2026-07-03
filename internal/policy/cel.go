@@ -9,16 +9,10 @@ import (
 	"github.com/google/cel-go/common/types/ref"
 )
 
-// CELEngine is an authority engine backed by Common Expression Language (CEL)
-// rules. Each rule is a boolean CEL expression over the variables `tool` and
-// `arg`; rules are evaluated in declaration order and the first whose
-// expression is true renders its verdict. If no rule matches, the default
-// verdict applies. It is the alternative to the built-in glob [Engine] for
-// operators who already standardize on CEL (or want richer predicates than
-// tool+glob).
-//
-// CELEngine implements [Evaluator]. It is safe for concurrent use: compiled
-// programs are immutable and cel.Program.Eval is goroutine-safe.
+// CELEngine is an authority engine backed by CEL rules. Each rule is a
+// boolean expression over the variables `tool` and `arg`; the first rule that
+// evaluates true wins, otherwise the default verdict applies. Safe for
+// concurrent use: compiled programs are immutable and Eval is goroutine-safe.
 type CELEngine struct {
 	rules []compiledRule
 	def   profile.Verdict
@@ -31,12 +25,9 @@ type compiledRule struct {
 	src     profile.CELRule
 }
 
-// NewCEL compiles rules into a [CELEngine]. Each rule's Expr must be a valid CEL
-// expression yielding a bool over the variables `tool` (string) and `arg`
-// (string). Compilation errors (syntax, type, or a non-boolean result) are
-// reported with the offending expression so misconfiguration fails fast at
-// sandbox creation rather than silently mis-authorizing at run time. If def is
-// empty it falls back to [profile.VerdictAllow].
+// NewCEL compiles rules into a CELEngine. Each Expr must yield a bool over
+// `tool` and `arg`; compile errors fail fast here rather than silently
+// mis-authorizing at run time. An empty def falls back to allow.
 func NewCEL(rules []profile.CELRule, def profile.Verdict) (*CELEngine, error) {
 	if def == "" {
 		def = profile.VerdictAllow
@@ -74,10 +65,9 @@ func NewCEL(rules []profile.CELRule, def profile.Verdict) (*CELEngine, error) {
 	return &CELEngine{rules: compiled, def: def}, nil
 }
 
-// Evaluate renders a [Decision] for a. The first rule whose expression
-// evaluates to true wins; a rule whose evaluation errors is skipped (treated as
-// non-matching) so a single bad rule cannot wedge the whole engine. When no
-// rule matches, the default verdict is returned with a nil Rule.
+// Evaluate renders a Decision for a; the first rule whose expression is true
+// wins. A rule whose evaluation errors is skipped so one bad rule cannot
+// wedge the engine. No match returns the default verdict with a nil Rule.
 func (e *CELEngine) Evaluate(a Action) Decision {
 	vars := map[string]any{"tool": a.Tool, "arg": a.Arg}
 	for i := range e.rules {
@@ -98,7 +88,6 @@ func (e *CELEngine) Evaluate(a Action) Decision {
 	return Decision{Verdict: e.def}
 }
 
-// isTrue reports whether a CEL result ref.Val is the boolean true.
 func isTrue(v ref.Val) bool {
 	b, ok := v.(types.Bool)
 	return ok && bool(b)

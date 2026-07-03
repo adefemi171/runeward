@@ -1,10 +1,7 @@
-// Package mcp exposes runeward's governed tools over the Model Context Protocol
-// so MCP-capable agents (Claude Desktop, Cursor, etc.) can drive sandboxes
-// through the same policy → guardrails → audit path as the REST API.
-//
-// Every tool delegates to [controlplane.Manager]; a policy deny surfaces as an
-// MCP tool error, and a require-approval verdict returns guidance telling the
-// agent to pause for a human decision rather than retrying blindly.
+// Package mcp exposes runeward's governed tools over the Model Context
+// Protocol, going through the same policy/guardrails/audit path as the REST
+// API. A policy deny surfaces as a tool error; require-approval returns
+// guidance telling the agent to pause for a human rather than retry.
 package mcp
 
 import (
@@ -22,8 +19,8 @@ import (
 // Version is the reported MCP server implementation version.
 const Version = "0.1.0"
 
-// NewServer builds an MCP server registering runeward's governed tools against
-// mgr.
+// NewServer builds an MCP server with runeward's governed tools registered
+// against mgr.
 func NewServer(mgr *controlplane.Manager) *sdk.Server {
 	s := sdk.NewServer(&sdk.Implementation{Name: "runeward", Version: Version}, nil)
 
@@ -217,8 +214,8 @@ func NewServer(mgr *controlplane.Manager) *sdk.Server {
 	return s
 }
 
-// registerFleetTools adds multi-agent fleet orchestration tools: a fleet is N
-// governed sandboxes sharing an atomic task board.
+// registerFleetTools adds the fleet orchestration tools (a fleet is N sandboxes
+// sharing a task board).
 func registerFleetTools(s *sdk.Server, mgr *controlplane.Manager) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "runeward_create_fleet",
@@ -379,8 +376,8 @@ func errText(err error) *sdk.CallToolResult {
 	return &sdk.CallToolResult{IsError: true, Content: content("error: " + err.Error())}
 }
 
-// blockedResult returns a non-nil result when the governed call errored, was
-// denied, or is pending approval; otherwise nil (caller formats success).
+// blockedResult is non-nil when the call errored, was denied, or is pending
+// approval; nil means the caller formats success.
 func blockedResult(res *controlplane.ToolResult, err error) *sdk.CallToolResult {
 	if err != nil {
 		return errText(err)
@@ -394,7 +391,7 @@ func blockedResult(res *controlplane.ToolResult, err error) *sdk.CallToolResult 
 	return nil
 }
 
-// execResult formats an exec-style result (exit code + stdout/stderr).
+// execResult formats an exec-style result (exit code plus stdout/stderr).
 func execResult(res *controlplane.ToolResult, err error) *sdk.CallToolResult {
 	if blocked := blockedResult(res, err); blocked != nil {
 		return blocked
@@ -413,7 +410,7 @@ func execResult(res *controlplane.ToolResult, err error) *sdk.CallToolResult {
 	return text(strings.TrimRight(b.String(), "\n"))
 }
 
-// rawResult returns just the command stdout on success (used for read/list/search).
+// rawResult returns just the stdout on success (read/list/search).
 func rawResult(res *controlplane.ToolResult, err error) *sdk.CallToolResult {
 	if blocked := blockedResult(res, err); blocked != nil {
 		return blocked

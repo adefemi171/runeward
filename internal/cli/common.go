@@ -8,8 +8,8 @@ import (
 	"github.com/adefemi171/runeward/internal/profile"
 )
 
-// loadProfile resolves a profile by name, honoring --config-dir and the
-// $RUNEWARD_CONFIG_DIR fallback.
+// loadProfile resolves a profile by name, honoring --config-dir and
+// $RUNEWARD_CONFIG_DIR.
 func loadProfile(name string, configDir string) (*profile.Profile, error) {
 	if configDir == "" {
 		configDir = os.Getenv("RUNEWARD_CONFIG_DIR")
@@ -17,9 +17,8 @@ func loadProfile(name string, configDir string) (*profile.Profile, error) {
 	return profile.Load(name, profile.Options{ConfigDir: configDir})
 }
 
-// resolveEnv turns a profile's [[env]] entries into literal name=value pairs,
-// resolved fresh. Values are never written to disk. Returns any non-fatal
-// warnings (e.g. deferred 1Password refs) for display.
+// resolveEnv turns a profile's [[env]] entries into name=value pairs. Values
+// are never written to disk; non-fatal problems come back as warnings.
 func resolveEnv(p *profile.Profile) (map[string]string, []string) {
 	out := make(map[string]string, len(p.Env))
 	var warnings []string

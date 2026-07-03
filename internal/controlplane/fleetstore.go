@@ -9,13 +9,11 @@ import (
 	"github.com/adefemi171/runeward/internal/fleet"
 )
 
-// fleetsFileName is the JSON file (under the state dir) that persists fleet task
-// boards so they survive control-plane restarts.
+// fleetsFileName persists fleet task boards across control-plane restarts.
 const fleetsFileName = "fleets.json"
 
-// persistedFleet is the on-disk projection of a [Fleet]. The task board is
-// stored as its task snapshot; sandbox ids are retained for reference (the
-// sandboxes themselves are not recreated on load).
+// persistedFleet is the on-disk projection of a Fleet. Sandbox ids are kept for
+// reference only; the sandboxes are not recreated on load.
 type persistedFleet struct {
 	ID        string       `json:"id"`
 	Profile   string       `json:"profile"`
@@ -24,7 +22,6 @@ type persistedFleet struct {
 	Tasks     []fleet.Task `json:"tasks"`
 }
 
-// fleetsPath returns the persistence file path, or "" when no state dir is set.
 func (m *Manager) fleetsPath() string {
 	if m.stateDir == "" {
 		return ""
@@ -32,8 +29,7 @@ func (m *Manager) fleetsPath() string {
 	return filepath.Join(m.stateDir, fleetsFileName)
 }
 
-// loadFleets restores persisted fleets into the manager. A missing file is not
-// an error. Boards are rebuilt with the configured lease so sweeping resumes.
+// loadFleets restores persisted fleets. A missing file is not an error.
 func (m *Manager) loadFleets() error {
 	path := m.fleetsPath()
 	if path == "" {
@@ -65,9 +61,8 @@ func (m *Manager) loadFleets() error {
 	return nil
 }
 
-// saveFleets atomically writes the current fleets to disk. It is a no-op when no
-// state dir is configured. The snapshot is taken under the fleet lock; the file
-// write happens outside it.
+// saveFleets atomically writes the current fleets to disk (no-op without a
+// state dir). The snapshot is taken under the lock; the write happens outside.
 func (m *Manager) saveFleets() {
 	path := m.fleetsPath()
 	if path == "" {
@@ -98,9 +93,8 @@ func (m *Manager) saveFleets() {
 	_ = os.Rename(tmp, path)
 }
 
-// startSweeper launches the lease-expiry sweeper. Every interval it requeues
-// tasks whose worker lease has expired across all fleets, records the recovery
-// in the audit ledger, and re-persists. It stops when Close is called.
+// startSweeper launches the lease-expiry sweeper, which requeues tasks with
+// expired worker leases every interval. Stopped by Close.
 func (m *Manager) startSweeper(interval time.Duration) {
 	if interval <= 0 {
 		return
@@ -122,8 +116,6 @@ func (m *Manager) startSweeper(interval time.Duration) {
 	}()
 }
 
-// sweepOnce requeues expired claims across every fleet and persists if anything
-// changed.
 func (m *Manager) sweepOnce() {
 	now := time.Now().UTC()
 	m.fleetMu.Lock()
@@ -145,7 +137,6 @@ func (m *Manager) sweepOnce() {
 	}
 }
 
-// stopSweeper signals the sweeper to exit and waits for it.
 func (m *Manager) stopSweeper() {
 	if m.sweepStop == nil {
 		return

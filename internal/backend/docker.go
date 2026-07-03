@@ -20,12 +20,9 @@ import (
 	"github.com/creack/pty"
 )
 
-// Docker is a sandbox backend that provisions one container per sandbox.
-//
-// It drives the `docker` CLI rather than the Go SDK: the CLI contract is far
-// more stable across Docker/OrbStack/Podman versions, which keeps builds
-// reproducible. The Backend interface hides this choice so it can be swapped
-// for the Engine API later without touching callers.
+// Docker provisions one container per sandbox. It drives the docker CLI
+// rather than the SDK; the CLI contract is more stable across
+// Docker/OrbStack/Podman.
 type Docker struct {
 	bin     string
 	snapDir string
@@ -75,8 +72,7 @@ func (d *Docker) Create(ctx context.Context, spec Spec) (*Sandbox, error) {
 		workdir = "/workspace"
 	}
 
-	// Deny-by-default profiles get an in-process egress proxy on the host; the
-	// container's traffic is forced through it via HTTP(S)_PROXY.
+	// Deny-by-default profiles get an egress proxy on the host, reached via HTTP(S)_PROXY.
 	var hp *hostProxy
 	var egressEnv map[string]string
 	if spec.Network.DenyByDefault() {
@@ -99,7 +95,7 @@ func (d *Docker) Create(ctx context.Context, spec Spec) (*Sandbox, error) {
 		"-v", vol + ":" + workdir,
 	}
 	if hp != nil {
-		// Ensure host.docker.internal resolves to the host on Linux/OrbStack.
+		// host.docker.internal doesn't resolve on Linux without this.
 		args = append(args, "--add-host", "host.docker.internal:host-gateway")
 	}
 	if spec.User != "" {
@@ -129,7 +125,6 @@ func (d *Docker) Create(ctx context.Context, spec Spec) (*Sandbox, error) {
 
 	if err := d.run(ctx, args...); err != nil {
 		hp.stop()
-		// Best-effort cleanup of the orphaned volume.
 		_ = d.run(context.Background(), "volume", "rm", "-f", vol)
 		return nil, fmt.Errorf("run container: %w", err)
 	}
@@ -140,8 +135,7 @@ func (d *Docker) Create(ctx context.Context, spec Spec) (*Sandbox, error) {
 		d.proxyMu.Unlock()
 	}
 
-	// Seed the empty workspace with a copy of a local directory, if requested.
-	// Done before projecting [[file]] entries so those can sit on top.
+	// Seed before projecting [[file]] entries so those can sit on top.
 	if spec.SeedDir != "" {
 		if err := d.seedWorkspace(ctx, id, workdir, spec.SeedDir); err != nil {
 			_ = d.Kill(context.Background(), id)
@@ -149,7 +143,6 @@ func (d *Docker) Create(ctx context.Context, spec Spec) (*Sandbox, error) {
 		}
 	}
 
-	// Project files after the container is up.
 	if len(spec.Files) > 0 {
 		if err := d.CopyFiles(ctx, id, spec.Files); err != nil {
 			_ = d.Kill(context.Background(), id)
@@ -220,9 +213,8 @@ func (d *Docker) AttachPTY(ctx context.Context, id string, s PTYStream) error {
 
 	cmd := exec.CommandContext(ctx, d.bin, args...)
 
-	// Non-TTY: wire plain pipes so stdin EOF propagates to the inner process.
-	// A PTY slave never receives EOF when its master stops writing, which would
-	// hang a shell reading from a closed pipe.
+	// Non-TTY: use plain pipes so stdin EOF propagates; a PTY slave never
+	// sees EOF and the inner shell would hang.
 	if !s.TTY {
 		cmd.Stdin = s.Stdin
 		cmd.Stdout = s.Stdout
@@ -251,7 +243,7 @@ func (d *Docker) AttachPTY(ctx context.Context, id string, s PTYStream) error {
 	if s.Stdin != nil {
 		go func() {
 			_, _ = io.Copy(f, s.Stdin)
-			// Signal EOF to the remote shell so it can exit cleanly.
+			// Close so the remote shell sees EOF and exits.
 			_ = f.Close()
 		}()
 	}
@@ -287,7 +279,6 @@ func (d *Docker) CopyFiles(ctx context.Context, id string, files []profile.File)
 		}
 		tmp.Close()
 
-		// Ensure the destination directory exists inside the container.
 		dir := filepath.Dir(f.Path)
 		if dir != "" && dir != "." && dir != "/" {
 			_ = d.run(ctx, "exec", containerName(id), "mkdir", "-p", dir)
@@ -308,10 +299,9 @@ func (d *Docker) CopyFiles(ctx context.Context, id string, files []profile.File)
 	return nil
 }
 
-// seedWorkspace copies the contents of srcDir into the sandbox workdir by
-// streaming a tar and extracting it inside the container. Extraction runs as
-// the container's default user, so the files are owned by the sandbox user;
-// the host directory is only read.
+// seedWorkspace streams srcDir as a tar and extracts it inside the container.
+// Extraction runs as the container's default user so files end up owned by
+// the sandbox user; the host directory is only read.
 func (d *Docker) seedWorkspace(ctx context.Context, id, workdir, srcDir string) error {
 	if fi, err := os.Stat(srcDir); err != nil || !fi.IsDir() {
 		return fmt.Errorf("copy_from %q must be an existing directory: %v", srcDir, err)

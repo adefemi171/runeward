@@ -18,12 +18,10 @@ func TestLeaseSweepRequeuesDeadWorker(t *testing.T) {
 		t.Fatal("claim should stamp a lease expiry")
 	}
 
-	// Before expiry, sweep is a no-op.
 	if got := b.Sweep(time.Now()); len(got) != 0 {
 		t.Fatalf("premature sweep requeued %d tasks", len(got))
 	}
 
-	// After expiry, the task is requeued to pending.
 	requeued := b.Sweep(time.Now().Add(time.Second))
 	if len(requeued) != 1 {
 		t.Fatalf("expected 1 requeued task, got %d", len(requeued))
@@ -55,7 +53,6 @@ func TestHeartbeatExtendsLease(t *testing.T) {
 		t.Fatal("heartbeat should push the lease expiry forward")
 	}
 
-	// Wrong owner is rejected.
 	if _, err := b.Heartbeat(c.ID, "someone-else"); err == nil {
 		t.Fatal("heartbeat by wrong owner should fail")
 	}

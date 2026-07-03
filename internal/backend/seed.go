@@ -10,14 +10,9 @@ import (
 	"strings"
 )
 
-// writeDirTar streams the contents of srcDir into w as a tar archive with
-// paths relative to srcDir, so extracting it at a sandbox workdir reproduces
-// the tree there. Regular files, directories, and symlinks are included; other
-// special files (sockets, devices, fifos) are skipped.
-//
-// It is used to seed a fresh, isolated workspace with a copy of a local
-// directory: the source is only read, never modified, and extraction happens
-// inside the sandbox as the sandbox user, so the copy is owned by that user.
+// writeDirTar tars the contents of srcDir into w with paths relative to
+// srcDir. Regular files, directories, and symlinks only; sockets, devices,
+// and fifos are skipped. The source is never modified.
 func writeDirTar(w io.Writer, srcDir string) error {
 	info, err := os.Stat(srcDir)
 	if err != nil {
@@ -78,11 +73,8 @@ func writeDirTar(w io.Writer, srcDir string) error {
 	return tw.Close()
 }
 
-// extractTar reads a tar stream from r and writes its regular files,
-// directories, and symlinks into destDir. It is the inverse of writeDirTar and
-// backs `runeward export`: pulling a sandbox workspace back out to a host
-// directory. Paths are sanitized against traversal so a malicious archive
-// cannot escape destDir.
+// extractTar writes a tar stream's files, directories, and symlinks into
+// destDir. Paths are sanitized so a malicious archive can't escape destDir.
 func extractTar(r io.Reader, destDir string) error {
 	tr := tar.NewReader(r)
 	for {
@@ -119,6 +111,9 @@ func extractTar(r io.Reader, destDir string) error {
 				return err
 			}
 		case tar.TypeSymlink:
+			if !symlinkWithinBase(destDir, target, hdr.Linkname) {
+				return fmt.Errorf("export: unsafe symlink %q -> %q in archive", hdr.Name, hdr.Linkname)
+			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
@@ -132,13 +127,31 @@ func extractTar(r io.Reader, destDir string) error {
 	}
 }
 
-// safeJoin joins name onto base, guaranteeing the result stays within base so a
-// crafted archive entry (e.g. "../../etc/passwd") cannot write outside destDir.
+// safeJoin joins name onto base, guaranteeing the result stays within base
+// (a crafted entry like "../../etc/passwd" must not escape).
 func safeJoin(base, name string) (string, error) {
 	clean := filepath.Clean("/" + filepath.ToSlash(name))
 	target := filepath.Join(base, clean)
-	if target != base && !strings.HasPrefix(target, base+string(os.PathSeparator)) {
+	if !withinBase(base, target) {
 		return "", fmt.Errorf("export: unsafe path %q in archive", name)
 	}
 	return target, nil
+}
+
+// symlinkWithinBase reports whether a symlink at linkPath pointing at linkname
+// resolves to a location inside base. Absolute targets are resolved as-is;
+// relative ones are resolved against the link's own directory.
+func symlinkWithinBase(base, linkPath, linkname string) bool {
+	var resolved string
+	if filepath.IsAbs(linkname) {
+		resolved = filepath.Clean(linkname)
+	} else {
+		resolved = filepath.Clean(filepath.Join(filepath.Dir(linkPath), linkname))
+	}
+	return withinBase(base, resolved)
+}
+
+// withinBase reports whether target is base itself or nested under it.
+func withinBase(base, target string) bool {
+	return target == base || strings.HasPrefix(target, base+string(os.PathSeparator))
 }

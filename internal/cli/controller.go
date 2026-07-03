@@ -13,10 +13,8 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
-// newControllerCmd runs the Kubernetes controller that reconciles runeward
-// Sandbox and Fleet custom resources onto the control-plane Manager. It is the
-// declarative, GitOps-friendly front door to the same governed backend used by
-// `serve`.
+// newControllerCmd runs the Kubernetes controller that reconciles Sandbox and
+// Fleet CRs onto the control-plane Manager.
 func newControllerCmd(configDir *string) *cobra.Command {
 	var workers int
 	var allNamespaces bool

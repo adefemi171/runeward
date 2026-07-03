@@ -37,7 +37,6 @@ func celBundle() *Bundle {
 	}
 }
 
-// roundTrip pushes b through an in-memory store and pulls it back with verify.
 func roundTrip(t *testing.T, b *Bundle, priv ed25519.PrivateKey, verify ed25519.PublicKey) (*Bundle, error) {
 	t.Helper()
 	ctx := context.Background()
@@ -100,9 +99,9 @@ func TestPullWrongKeyFails(t *testing.T) {
 	}
 }
 
-// TestTamperedPolicyFails rewrites the layer descriptor in the manifest to point
-// at a tampered blob. The signature (which covers the original layer digest) no
-// longer matches, so a verifying pull must fail closed.
+// TestTamperedPolicyFails repoints the manifest's layer descriptor at a
+// tampered blob; the signature covers the original digest, so a verifying
+// pull must fail closed.
 func TestTamperedPolicyFails(t *testing.T) {
 	ctx := context.Background()
 	pub, priv := newKey(t)
@@ -113,7 +112,6 @@ func TestTamperedPolicyFails(t *testing.T) {
 		t.Fatalf("push: %v", err)
 	}
 
-	// Read the genuine manifest to reuse its config descriptor and signature.
 	_, manifestBytes, err := oras.FetchBytes(ctx, store, "v1", oras.DefaultFetchBytesOptions)
 	if err != nil {
 		t.Fatalf("fetch original manifest: %v", err)
@@ -123,9 +121,8 @@ func TestTamperedPolicyFails(t *testing.T) {
 		t.Fatalf("decode original manifest: %v", err)
 	}
 
-	// Push tampered policy bytes as a new blob and re-pack a manifest that
-	// carries the *original* signature annotations and config but a tampered
-	// layer.
+	// Re-pack a manifest with the original signature annotations and config
+	// but a tampered layer.
 	tampered := []byte("package runeward\n\ndecision := \"deny\"\n")
 	layerDesc, err := oras.PushBytes(ctx, store, MediaTypeLayerRego, tampered)
 	if err != nil {
@@ -148,8 +145,6 @@ func TestTamperedPolicyFails(t *testing.T) {
 	}
 }
 
-// TestOCILayoutRoundTrip exercises the filesystem OCI layout store so the push
-// and pull paths are covered end-to-end without a live registry.
 func TestOCILayoutRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	pub, priv := newKey(t)

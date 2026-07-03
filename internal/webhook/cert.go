@@ -12,16 +12,13 @@ import (
 	"time"
 )
 
-// certValidity is how long the generated CA and leaf certificate remain valid.
+// certValidity is how long the generated CA and leaf certificate stay valid.
 const certValidity = 365 * 24 * time.Hour
 
-// GenerateCert bootstraps a self-signed serving certificate for the admission
-// webhook. It mints an ECDSA CA and a leaf certificate valid for the supplied
-// DNS names (typically <svc>.<ns>.svc and <svc>.<ns>.svc.cluster.local) and
-// returns PEM-encoded blocks: the leaf certificate, its private key, and the CA
-// certificate to publish in the webhook configuration's caBundle.
-//
-// It depends only on the standard library.
+// GenerateCert mints an ECDSA CA plus a leaf serving certificate for the
+// supplied DNS names (typically <svc>.<ns>.svc and <svc>.<ns>.svc.cluster.local)
+// and returns PEM blocks: leaf cert, leaf key, and the CA cert to publish in
+// the webhook caBundle.
 func GenerateCert(dnsNames []string) (certPEM, keyPEM, caPEM []byte, err error) {
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

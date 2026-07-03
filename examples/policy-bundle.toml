@@ -32,7 +32,7 @@ workdir = "/workspace"
 # policy_bundle is its own top-level table (NOT nested under [host]). When set,
 # it supersedes the inline policy fields (policy_engine / [[cel]] / [rego]).
 [policy_bundle]
-# oci://registry/repo:tag or repo@sha256:... — replace with your pushed ref.
+# oci://registry/repo:tag or repo@sha256:...; replace with your pushed ref.
 ref = "oci://ghcr.io/adefemi171/policies/shell-guard:v1"
 # base64 ed25519 public key; when set the signature is required and verified.
 # Replace with the contents of your bundle.pub (leave empty to skip verification).

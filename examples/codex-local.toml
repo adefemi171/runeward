@@ -1,9 +1,9 @@
 # A governed Codex agent seeded with a COPY of a local project folder.
 #
 # `copy_from` copies your folder's contents into the fresh /workspace at
-# creation. It is a one-time copy: your host folder is never mounted and never
-# modified — the agent works entirely against the isolated copy inside the
-# sandbox. (The image must ship `tar`; runeward-agent:dev does.)
+# creation. It is a one-time copy: the host folder is never mounted or
+# modified, and the agent works only on the copy inside the sandbox. The
+# image must ship `tar` (runeward-agent:dev does).
 #
 #   docker build -f deploy/Dockerfile.agent -t runeward-agent:dev .
 #   printf '%s' "$OPENAI_API_KEY" > ~/.runeward-openai.key

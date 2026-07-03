@@ -9,7 +9,7 @@ import (
 	"github.com/adefemi171/runeward/internal/profile"
 )
 
-// fakeClock is a manually advanced clock for deterministic time-based tests.
+// fakeClock is a manually advanced clock for deterministic tests.
 type fakeClock struct {
 	mu sync.Mutex
 	t  time.Time
@@ -55,7 +55,7 @@ func TestMaxExecs(t *testing.T) {
 }
 
 func TestMaxExecsUnlimited(t *testing.T) {
-	g, _ := NewGuard(profile.Limits{}) // no limits set
+	g, _ := NewGuard(profile.Limits{})
 	g.Start()
 	for i := 0; i < 1000; i++ {
 		if err := g.CheckExec(); err != nil {
@@ -99,7 +99,7 @@ func TestWallClockDisabledWithoutStart(t *testing.T) {
 	clk := newFakeClock()
 	g, _ := NewGuard(profile.Limits{WallClock: "10ms"})
 	g.now = clk.now
-	// No Start() call: wall-clock enforcement is inert.
+	// No Start() call, so wall-clock enforcement is inert.
 	clk.advance(time.Hour)
 	if err := g.CheckExec(); err != nil {
 		t.Fatalf("wall-clock enforced without Start: %v", err)
@@ -127,7 +127,6 @@ func TestLoopDetectionTripsWithinWindow(t *testing.T) {
 	if !tripped || key != "k" {
 		t.Fatalf("expected loop trip on key k, got tripped=%v key=%q", tripped, key)
 	}
-	// Subsequent CheckExec should now be blocked.
 	if err := g.CheckExec(); !errors.Is(err, ErrLoopDetected) {
 		t.Fatalf("CheckExec after loop: got %v, want ErrLoopDetected", err)
 	}
@@ -138,7 +137,7 @@ func TestLoopDetectionSpacedBeyondWindow(t *testing.T) {
 	g, _ := NewGuard(profile.Limits{LoopWindow: "1s", LoopThreshold: 3})
 	g.now = clk.now
 
-	// Each failure is > window apart, so the window never holds >= threshold.
+	// Failures spaced beyond the window never accumulate to the threshold.
 	for i := 0; i < 5; i++ {
 		g.RecordOutcome("k", true)
 		clk.advance(2 * time.Second)
@@ -189,7 +188,7 @@ func TestLoopDetectionPerKeyIsolation(t *testing.T) {
 }
 
 func TestLoopDetectionDisabled(t *testing.T) {
-	g, _ := NewGuard(profile.Limits{}) // no loop window/threshold
+	g, _ := NewGuard(profile.Limits{})
 	for i := 0; i < 100; i++ {
 		g.RecordOutcome("k", true)
 	}
