@@ -88,12 +88,20 @@ func lintEnv(p *Profile, add func(sev, field, msg string)) {
 			}
 		}
 
-		// op:// references are resolved at runtime and are fail-closed: a
-		// profile that depends on one cannot be validated as safe statically,
-		// and will refuse (or fail) to inject the value if resolution breaks.
+		// Secret references resolve at runtime and are fail-closed: the value
+		// cannot be validated statically. env:// and vault:// are built-in and
+		// resolve if the source is present, so they are footguns (warn). Other
+		// schemes (e.g. op://) are not built in and always fail closed (error).
 		if e.Op != "" {
-			add(SeverityError, field+".op",
-				fmt.Sprintf("env %q uses an unresolved 1Password reference (%s); it is fail-closed at runtime and cannot be validated statically", e.Name, e.Op))
+			scheme, _, _ := strings.Cut(e.Op, "://")
+			switch scheme {
+			case "env", "vault":
+				add(SeverityWarn, field+".op",
+					fmt.Sprintf("env %q resolves %q at sandbox creation; it is fail-closed and cannot be validated statically", e.Name, e.Op))
+			default:
+				add(SeverityError, field+".op",
+					fmt.Sprintf("env %q uses an external secret reference (%s) that is not built in; it always fails closed at runtime and cannot be validated statically", e.Name, e.Op))
+			}
 		}
 
 		// file sources are read from the operator's machine; a missing path

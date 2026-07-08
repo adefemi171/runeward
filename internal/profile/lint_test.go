@@ -46,6 +46,15 @@ func TestLintFindings(t *testing.T) {
 			wantField:    "env[0].op",
 		},
 		{
+			name: "env reference warns",
+			profile: &Profile{
+				Host: Host{Image: "img"},
+				Env:  []EnvVar{{Name: "TOKEN", Op: "env://TOKEN"}},
+			},
+			wantSeverity: SeverityWarn,
+			wantField:    "env[0].op",
+		},
+		{
 			name: "duplicate env name errors",
 			profile: &Profile{
 				Host: Host{Image: "img"},

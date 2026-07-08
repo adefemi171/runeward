@@ -56,10 +56,6 @@ ROADMAP.md
 /adapters/typescript/node_modules/
 /adapters/typescript/dist/
 
-# Scratch screenshots produced by the browser E2E walkthrough
-/session-shot.png
-/shot.png
-
 # Signed-profile artifacts produced by `profile sign` during testing
 *.toml.sig
 

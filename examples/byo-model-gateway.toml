@@ -1,8 +1,13 @@
-# Bring-your-own-model profile: route model calls to your own OpenAI-compatible
-# gateway (vLLM/Ollama/LiteLLM) while keeping deny-by-default egress and audit on.
+# Bring-your-own-model profile: keep model traffic on a LOCAL / self-hosted
+# runtime instead of a hosted API, while keeping deny-by-default egress + audit.
+#
+# The default target below is Ollama on your machine (port 11434). "OPENAI_*" is
+# just the wire convention every local runtime speaks (Ollama, vLLM, llama.cpp,
+# LM Studio, LiteLLM, TGI) - it does not send anything to OpenAI. The key is a
+# placeholder for servers that ignore auth.
 #
 #   OPENAI_BASE_URL=http://host.docker.internal:11434/v1 \
-#   OPENAI_API_KEY=dummy \
+#   OPENAI_API_KEY=local \
 #   runeward --config-dir examples serve
 #   POST /v1/sandboxes {"profile":"byo-model-gateway"}
 
@@ -42,8 +47,16 @@ egress_requests = 1200
 loop_window     = "60s"
 loop_threshold  = 12
 
+# The endpoint + key are sourced once from the host env and injected under the
+# common aliases so OpenAI SDK, LangChain, LiteLLM, etc. all pick them up. All
+# alias entries read the SAME host var, so you only export OPENAI_BASE_URL /
+# OPENAI_API_KEY on the host; adding an unexported source would fail closed.
 [[env]]
 name = "OPENAI_BASE_URL"
+op   = "env://OPENAI_BASE_URL"
+
+[[env]]
+name = "OPENAI_API_BASE"
 op   = "env://OPENAI_BASE_URL"
 
 [[env]]

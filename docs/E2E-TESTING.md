@@ -1657,17 +1657,22 @@ podman ps -a --filter "label=runeward.profile"   # sandboxes show up under podma
 
 ---
 
-## 30. Bring-your-own-model gateway profile
+## 30. Local / self-hosted model profile
 
-A ready template that pins an agent's model traffic to a self-hosted,
-OpenAI-compatible gateway (vLLM / Ollama / LiteLLM) with deny-by-default egress.
+A ready template that pins an agent's model traffic to a **local** runtime
+(Ollama / vLLM / llama.cpp / LM Studio / LiteLLM — anything exposing an
+OpenAI-compatible `/v1`) with deny-by-default egress. "OpenAI" here is the wire
+protocol, not the vendor; nothing leaves for a hosted API.
 
 ```bash
-./bin/runeward --config-dir examples validate byo-model-gateway   # => ok
-# Provide the gateway URL + key on the host env (injected via op = "env://…"):
-export OPENAI_BASE_URL=http://host.docker.internal:11434/v1 OPENAI_API_KEY=sk-local
+./bin/runeward --config-dir examples validate byo-model-gateway   # => passes (env:// refs warn)
+# Point at your local runtime (Ollama's default port shown); the key is a
+# placeholder for servers that ignore auth. Injected under OPENAI_BASE_URL,
+# OPENAI_API_BASE, and OPENAI_API_KEY so OpenAI SDK / LangChain / LiteLLM agents
+# all pick it up:
+export OPENAI_BASE_URL=http://host.docker.internal:11434/v1 OPENAI_API_KEY=local
 CID=$(curl -s "${AUTH[@]}" $BASE/v1/sandboxes -d '{"profile":"byo-model-gateway"}' | jq -r .id)
-# Only the gateway host is reachable; everything else is denied egress.
+# Only the runtime host is reachable; everything else is denied egress.
 ```
 
 Full walkthrough (air-gapped, still-audited fleets): [Bring your own model](byo-model.md).
