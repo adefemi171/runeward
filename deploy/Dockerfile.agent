@@ -21,10 +21,13 @@ ENV HOME=/home/agent
 
 # Cursor CLI installs into the user's home (~/.local/bin or ~/.cursor/bin).
 # Rather than piping a remote script straight into a shell, download it to a
-# file first so it can be pinned/inspected. Set INSTALL_CURSOR=false to skip.
-# CURSOR_INSTALLER_SHA256 is required when INSTALL_CURSOR=true (missing or
-# mismatched digests fail closed, so a tampered/updated script can't run).
-ARG INSTALL_CURSOR=true
+# file first so it can be pinned/inspected. Cursor is opt-in: the default build
+# (CI release + image scans pass no build-args) skips it so it stays
+# reproducible. To include it, build with
+#   --build-arg INSTALL_CURSOR=true --build-arg CURSOR_INSTALLER_SHA256=<digest>
+# The digest is required when INSTALL_CURSOR=true (missing or mismatched digests
+# fail closed, so a tampered/updated installer script can't run).
+ARG INSTALL_CURSOR=false
 ARG CURSOR_INSTALLER_SHA256=""
 RUN if [ "$INSTALL_CURSOR" = "true" ]; then \
       curl -fsS https://cursor.com/install -o /tmp/cursor-install.sh \
