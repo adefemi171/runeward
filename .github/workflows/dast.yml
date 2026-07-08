@@ -60,11 +60,15 @@ jobs:
           exit 1
 
       - name: ZAP baseline scan
-        uses: zaproxy/action-baseline@v0.12.0
+        uses: zaproxy/action-baseline@v0.15.0
         with:
           target: http://127.0.0.1:8080
-          # -a: also report alerts marked "IGNORE"/informational; keeps the
-          # scan from failing the step on baseline warnings.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Regression-visibility only: don't file/update a GitHub issue (keeps
+          # permissions at contents: read) and don't fail the step on alerts.
+          allow_issue_writing: false
+          fail_action: false
+          # -a: also report alerts marked "IGNORE"/informational.
           cmd_options: "-a"
 
       - name: Stop runeward
