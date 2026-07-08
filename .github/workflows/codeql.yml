@@ -27,7 +27,7 @@ jobs:
           cache: true
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4.36.3
+        uses: github/codeql-action/init@v4.37.0
         with:
           languages: go
           config-file: ./.github/codeql/codeql-config.yml
@@ -37,6 +37,6 @@ jobs:
         run: go build ./...
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v4.36.3
+        uses: github/codeql-action/analyze@v4.37.0
         with:
           category: "/language:go"
