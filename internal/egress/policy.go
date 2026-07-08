@@ -74,6 +74,22 @@ func (p Policy) Allow(host string) bool {
 	return p.defaultAllows()
 }
 
+// AllowListedHostname reports whether host matches an explicit hostname rule
+// whose first matching verdict is allow. Unlike [Allow], it does not fall back
+// to the policy default.
+func (p Policy) AllowListedHostname(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, r := range p.Rules {
+		if r.Hostname == "" {
+			continue
+		}
+		if hostnameMatches(r.Hostname, host) {
+			return verdictAllows(r.Verdict)
+		}
+	}
+	return false
+}
+
 // AllowAddr reports whether the destination "host:port" is permitted. The
 // host is checked against Hostname rules, and against CIDR rules when it
 // parses as an IP; first match decides, otherwise Default applies.

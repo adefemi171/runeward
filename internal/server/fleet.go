@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/Runewardd/runeward/internal/controlplane"
 	"github.com/Runewardd/runeward/internal/fleet"
@@ -20,7 +21,15 @@ func (s *Server) handleCreateFleet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "profile is required")
 		return
 	}
-	v, err := s.mgr.CreateFleet(r.Context(), req.Profile)
+	owner := ""
+	if p := principalFrom(r.Context()); p != nil {
+		if !p.CanLaunch(req.Profile) {
+			writeError(w, http.StatusForbidden, "not authorized to launch profile "+req.Profile)
+			return
+		}
+		owner = p.Name
+	}
+	v, err := s.mgr.CreateFleetForOwner(r.Context(), req.Profile, owner)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -30,6 +39,15 @@ func (s *Server) handleCreateFleet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListFleets(w http.ResponseWriter, r *http.Request) {
 	list := s.mgr.ListFleets()
+	if p := principalFrom(r.Context()); p != nil && !p.Admin {
+		filtered := make([]controlplane.FleetView, 0, len(list))
+		for _, v := range list {
+			if s.fleetOwnedBy(v.ID, p.Name) {
+				filtered = append(filtered, v)
+			}
+		}
+		list = filtered
+	}
 	if list == nil {
 		list = []controlplane.FleetView{}
 	}
@@ -110,7 +128,12 @@ func (s *Server) handleCompleteTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := s.mgr.CompleteTask(r.PathValue("id"), r.PathValue("taskID"), req.Owner, req.Result); err != nil {
+	owner, err := taskOwnerFromRequest(r, req.Owner)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.mgr.CompleteTask(r.PathValue("id"), r.PathValue("taskID"), owner, req.Result); err != nil {
 		writeTaskErr(w, err)
 		return
 	}
@@ -143,11 +166,30 @@ func (s *Server) handleFailTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := s.mgr.FailTask(r.PathValue("id"), r.PathValue("taskID"), req.Owner, req.Error, req.Requeue); err != nil {
+	owner, err := taskOwnerFromRequest(r, req.Owner)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.mgr.FailTask(r.PathValue("id"), r.PathValue("taskID"), owner, req.Error, req.Requeue); err != nil {
 		writeTaskErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func taskOwnerFromRequest(r *http.Request, requested string) (string, error) {
+	if p := principalFrom(r.Context()); p != nil {
+		if strings.TrimSpace(p.Name) == "" {
+			return "", errors.New("authenticated principal name is empty")
+		}
+		return p.Name, nil
+	}
+	owner := strings.TrimSpace(requested)
+	if owner == "" {
+		return "", errors.New("owner is required")
+	}
+	return owner, nil
 }
 
 // writeTaskErr maps board errors to HTTP statuses.

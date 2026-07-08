@@ -40,6 +40,7 @@ type Server struct {
 	dashboard http.Handler
 	logger    *slog.Logger
 	upgrader  websocket.Upgrader
+	tickets   apiTicketStore
 
 	// AuthToken, when non-empty, requires every request (except /healthz) to
 	// present it as a bearer token. Empty disables authentication. Ignored when
@@ -57,6 +58,28 @@ type Server struct {
 
 // principalCtxKey keys the authenticated principal in a request context.
 type principalCtxKey struct{}
+
+type apiTicketStore struct {
+	mu   sync.Mutex
+	byID map[string]apiTicket
+}
+
+type apiTicket struct {
+	Scope     ticketScope
+	Principal *authz.Principal
+	ExpiresAt time.Time
+}
+
+type ticketScope struct {
+	Kind      string
+	SandboxID string
+	Path      string
+}
+
+const (
+	ticketKindTerminal = "terminal"
+	ticketKindDownload = "download"
+)
 
 // principalFrom returns the RBAC principal attached to the request, or nil when
 // RBAC is not configured (legacy single-token / open mode).
@@ -104,6 +127,8 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /v1/whoami", s.handleWhoami)
 	mux.HandleFunc("GET /v1/profiles", s.handleListProfiles)
+	mux.HandleFunc("POST /v1/tickets", s.handleCreateTicket)
+	mux.HandleFunc("POST /v1/policy/simulate", s.handlePolicySimulate)
 
 	mux.HandleFunc("POST /v1/sandboxes", s.handleCreateSandbox)
 	mux.HandleFunc("GET /v1/sandboxes", s.handleListSandboxes)
@@ -122,6 +147,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sandboxes/{id}/file/list", s.handleFileList)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/file/search", s.handleFileSearch)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/usage", s.handleReportUsage)
+	mux.HandleFunc("GET /v1/sandboxes/{id}/egress", s.handleEgressLog)
 
 	mux.HandleFunc("POST /v1/fleets", s.handleCreateFleet)
 	mux.HandleFunc("GET /v1/fleets", s.handleListFleets)
@@ -148,6 +174,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/approvals/{id}/deny", s.handleDeny)
 
 	mux.HandleFunc("GET /v1/sandboxes/{id}/terminal", s.handleTerminal)
+	mux.HandleFunc("POST /v1/sandboxes/{id}/terminal-ticket", s.handleTerminalTicket)
 
 	if s.MCP != nil {
 		mux.Handle("/mcp", s.MCP)
@@ -196,7 +223,16 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		if s.Authz != nil {
-			p, ok := s.Authz.Identify(presentedToken(r))
+			if tp, ok, attempted := s.consumeRequestTicket(r); attempted {
+				if !ok {
+					w.Header().Set("WWW-Authenticate", "Bearer")
+					writeError(w, http.StatusUnauthorized, "unauthorized: invalid or expired ticket")
+					return
+				}
+				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalCtxKey{}, tp)))
+				return
+			}
+			p, ok := s.Authz.Identify(presentedToken(r, isTerminalPath(r.URL.Path)))
 			if !ok {
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				writeError(w, http.StatusUnauthorized, "unauthorized: unknown or missing API token")
@@ -205,7 +241,16 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalCtxKey{}, p)))
 			return
 		}
-		if !tokenMatches(r, want) {
+		if _, ok, attempted := s.consumeRequestTicket(r); attempted {
+			if !ok {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				writeError(w, http.StatusUnauthorized, "unauthorized: invalid or expired ticket")
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !tokenMatches(r, want, isTerminalPath(r.URL.Path)) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeError(w, http.StatusUnauthorized, "unauthorized: missing or invalid API token")
 			return
@@ -244,15 +289,16 @@ func (s *Server) publicDashboardAsset(r *http.Request) bool {
 // principal can't even probe for the existence of another principal's
 // sandboxes. Open/legacy mode (no principal) and admins are unrestricted.
 func (s *Server) ownershipGuard(next http.Handler) http.Handler {
-	const prefix = "/v1/sandboxes/"
+	const sandboxPrefix = "/v1/sandboxes/"
+	const fleetPrefix = "/v1/fleets/"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := principalFrom(r.Context())
 		if p == nil || p.Admin {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, prefix) {
-			rest := strings.TrimPrefix(r.URL.Path, prefix)
+		if strings.HasPrefix(r.URL.Path, sandboxPrefix) {
+			rest := strings.TrimPrefix(r.URL.Path, sandboxPrefix)
 			id := rest
 			if i := strings.IndexByte(rest, '/'); i >= 0 {
 				id = rest[:i]
@@ -263,6 +309,35 @@ func (s *Server) ownershipGuard(next http.Handler) http.Handler {
 					return
 				}
 			}
+		}
+		if strings.HasPrefix(r.URL.Path, fleetPrefix) {
+			rest := strings.TrimPrefix(r.URL.Path, fleetPrefix)
+			id := rest
+			if i := strings.IndexByte(rest, '/'); i >= 0 {
+				id = rest[:i]
+			}
+			if id != "" && !s.fleetOwnedBy(id, p.Name) {
+				writeError(w, http.StatusNotFound, "fleet not found")
+				return
+			}
+		}
+		if strings.HasPrefix(r.URL.Path, "/v1/snapshots/") && strings.HasSuffix(r.URL.Path, "/restore") {
+			id := strings.TrimPrefix(r.URL.Path, "/v1/snapshots/")
+			id = strings.TrimSuffix(id, "/restore")
+			if !s.snapshotVisibleTo(p, id) {
+				writeError(w, http.StatusNotFound, "snapshot not found")
+				return
+			}
+		}
+		if strings.HasPrefix(r.URL.Path, "/v1/audit/") {
+			if r.URL.Path == "/v1/audit/export" {
+				writeError(w, http.StatusForbidden, "not authorized to export audit bundle")
+				return
+			}
+		}
+		if strings.HasPrefix(r.URL.Path, "/v1/approvals") && !p.MayApprove() {
+			writeError(w, http.StatusForbidden, "not authorized to view approvals")
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -371,8 +446,7 @@ func (s *Server) ListenAndServe(addr string) error {
 // authentication is disabled and next is returned unchanged. /healthz is always
 // exempt so liveness probes work without credentials. The token may be
 // presented as "Authorization: Bearer <token>", an "X-Runeward-Token" header,
-// or a "token" query parameter (the last is required for browser WebSocket
-// connections, which cannot set arbitrary headers).
+// or a "token" query parameter only for terminal WebSocket compatibility.
 func TokenAuth(token string, next http.Handler) http.Handler {
 	if token == "" {
 		return next
@@ -383,7 +457,7 @@ func TokenAuth(token string, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if !tokenMatches(r, want) {
+		if !tokenMatches(r, want, isTerminalPath(r.URL.Path)) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeError(w, http.StatusUnauthorized, "unauthorized: missing or invalid API token")
 			return
@@ -393,26 +467,160 @@ func TokenAuth(token string, next http.Handler) http.Handler {
 }
 
 // presentedToken extracts the caller's token from the Authorization bearer
-// header, the X-Runeward-Token header, or the ?token= query param (the last is
-// required for browser WebSocket connections, which cannot set headers).
-func presentedToken(r *http.Request) string {
+// header, the X-Runeward-Token header, and optionally the ?token= query param
+// when allowQuery is true.
+func presentedToken(r *http.Request, allowQuery bool) string {
 	if h := r.Header.Get("Authorization"); h != "" {
 		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
 	}
 	if h := r.Header.Get("X-Runeward-Token"); h != "" {
 		return strings.TrimSpace(h)
 	}
+	if !allowQuery {
+		return ""
+	}
 	return r.URL.Query().Get("token")
 }
 
 // tokenMatches reports whether r carries the expected token, using a
 // constant-time comparison to avoid leaking it via timing.
-func tokenMatches(r *http.Request, want []byte) bool {
-	got := presentedToken(r)
+func tokenMatches(r *http.Request, want []byte, allowQuery bool) bool {
+	got := presentedToken(r, allowQuery)
 	if got == "" {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(got), want) == 1
+}
+
+func isTerminalPath(path string) bool {
+	const prefix = "/v1/sandboxes/"
+	const suffix = "/terminal"
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		return false
+	}
+	rest := strings.TrimPrefix(path, prefix)
+	id := strings.TrimSuffix(rest, suffix)
+	return id != ""
+}
+
+func terminalSandboxID(path string) (string, bool) {
+	if !isTerminalPath(path) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(path, "/v1/sandboxes/")
+	id := strings.TrimSuffix(rest, "/terminal")
+	return id, id != ""
+}
+
+func (s *Server) consumeRequestTicket(r *http.Request) (*authz.Principal, bool, bool) {
+	scope := ticketScope{Kind: ticketKindDownload}
+	if sandboxID, ok := terminalSandboxID(r.URL.Path); ok {
+		scope = ticketScope{Kind: ticketKindTerminal, SandboxID: sandboxID}
+	}
+	return s.consumeTicket(r, scope)
+}
+
+func (s *Server) consumeTicket(r *http.Request, want ticketScope) (*authz.Principal, bool, bool) {
+	ticketID := strings.TrimSpace(r.URL.Query().Get("ticket"))
+	if ticketID == "" {
+		return nil, false, false
+	}
+	s.tickets.mu.Lock()
+	defer s.tickets.mu.Unlock()
+	if s.tickets.byID == nil {
+		return nil, false, true
+	}
+	t, ok := s.tickets.byID[ticketID]
+	if !ok {
+		return nil, false, true
+	}
+	delete(s.tickets.byID, ticketID)
+	if time.Now().After(t.ExpiresAt) {
+		return nil, false, true
+	}
+	if t.Scope.Kind != want.Kind {
+		return nil, false, true
+	}
+	switch want.Kind {
+	case ticketKindTerminal:
+		if t.Scope.SandboxID == "" || t.Scope.SandboxID != want.SandboxID {
+			return nil, false, true
+		}
+	case ticketKindDownload:
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			return nil, false, true
+		}
+		if t.Scope.Path != "" && t.Scope.Path != r.URL.Path {
+			return nil, false, true
+		}
+	}
+	return t.Principal, true, true
+}
+
+func (s *Server) issueTicket(scope ticketScope, p *authz.Principal, ttl time.Duration) (string, time.Time, error) {
+	if ttl <= 0 {
+		ttl = 30 * time.Second
+	}
+	switch scope.Kind {
+	case ticketKindTerminal:
+		if strings.TrimSpace(scope.SandboxID) == "" {
+			return "", time.Time{}, errors.New("terminal ticket requires sandbox scope")
+		}
+	case ticketKindDownload:
+	default:
+		return "", time.Time{}, errors.New("unsupported ticket kind")
+	}
+	var raw [16]byte
+	if _, err := crand.Read(raw[:]); err != nil {
+		return "", time.Time{}, err
+	}
+	id := hex.EncodeToString(raw[:])
+	expires := time.Now().Add(ttl)
+	s.tickets.mu.Lock()
+	defer s.tickets.mu.Unlock()
+	if s.tickets.byID == nil {
+		s.tickets.byID = make(map[string]apiTicket)
+	}
+	s.tickets.byID[id] = apiTicket{
+		Scope:     scope,
+		Principal: p,
+		ExpiresAt: expires,
+	}
+	return id, expires, nil
+}
+
+func (s *Server) issueTerminalTicket(sandboxID string, p *authz.Principal, ttl time.Duration) (string, time.Time, error) {
+	return s.issueTicket(ticketScope{Kind: ticketKindTerminal, SandboxID: sandboxID}, p, ttl)
+}
+
+func (s *Server) fleetOwnedBy(id, owner string) bool {
+	v, ok := s.mgr.FleetView(id)
+	if !ok || strings.TrimSpace(owner) == "" {
+		return false
+	}
+	if v.Owner != "" {
+		return v.Owner == owner
+	}
+	if len(v.Sandboxes) == 0 {
+		return false
+	}
+	for _, sandboxID := range v.Sandboxes {
+		sandboxOwner, ok := s.mgr.SandboxOwner(sandboxID)
+		if !ok || sandboxOwner != owner {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) snapshotVisibleTo(p *authz.Principal, id string) bool {
+	for _, ref := range s.mgr.ListSnapshots() {
+		if ref.ID != id {
+			continue
+		}
+		return p.CanLaunch(ref.Profile)
+	}
+	return false
 }
 
 // limitBody caps every request body at maxRequestBodyBytes to bound memory use.
@@ -440,6 +648,17 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // can embed host paths or other detail that must not leak to API callers, so
 // only the id is returned; operators correlate it against the logs.
 func writeServerError(w http.ResponseWriter, logger *slog.Logger, err error) {
+	// Caller-actionable errors (bad input, missing resource) carry a message
+	// that is safe to return, so surface them as 4xx instead of an opaque 500.
+	var ce *controlplane.ClientError
+	if errors.As(err, &ce) {
+		status := http.StatusBadRequest
+		if ce.NotFound {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, ce.Error())
+		return
+	}
 	id := newRequestID()
 	if logger != nil {
 		logger.Error("internal error serving request", "request_id", id, "error", err)

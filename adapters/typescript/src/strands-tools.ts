@@ -9,6 +9,11 @@
  * npm install @strands-agents/sdk zod
  * ```
  *
+ * The optional peers are imported through a `string`-typed specifier so this
+ * package type-checks and builds without them installed (and stays immune to
+ * Strands type churn across major versions); the tool input shapes are typed
+ * explicitly from the client instead of inferred from the framework.
+ *
  * Each tool converts governance verdicts into a short, model-readable string
  * (rather than throwing) so the model can reason about a denial or an approval
  * gate: a `deny` must not be retried blindly, and a `require-approval` is a hard
@@ -61,9 +66,11 @@ async function guarded<T>(fn: () => Promise<T>): Promise<string> {
  * ```
  */
 export async function makeRunewardTools(client: RunewardClient) {
-  // Dynamic imports keep `@strands-agents/sdk` and `zod` as optional peers.
-  const { tool } = await import("@strands-agents/sdk");
-  const { z } = await import("zod");
+  // Dynamic imports keep `@strands-agents/sdk` and `zod` as optional peers. The
+  // `as string` specifier makes these fully dynamic so tsc does not require the
+  // packages to be installed to build this file.
+  const { tool } = await import("@strands-agents/sdk" as string);
+  const { z } = await import("zod" as string);
 
   return [
     tool({
@@ -73,7 +80,8 @@ export async function makeRunewardTools(client: RunewardClient) {
       inputSchema: z.object({
         profile: z.string().describe("Profile name, e.g. 'dev' or 'governed'."),
       }),
-      callback: (input) => guarded(() => client.createSandbox(input.profile)),
+      callback: (input: { profile: string }) =>
+        guarded(() => client.createSandbox(input.profile)),
     }),
 
     tool({
@@ -85,7 +93,8 @@ export async function makeRunewardTools(client: RunewardClient) {
         command: z.array(z.string()).describe("argv array, e.g. ['ls','-la']."),
         workdir: z.string().optional().describe("Optional working directory."),
       }),
-      callback: (input) => guarded(() => client.shell(input.sandbox, input.command, input.workdir ?? "")),
+      callback: (input: { sandbox: string; command: string[]; workdir?: string }) =>
+        guarded(() => client.shell(input.sandbox, input.command, input.workdir ?? "")),
     }),
 
     tool({
@@ -95,7 +104,8 @@ export async function makeRunewardTools(client: RunewardClient) {
         sandbox: z.string(),
         code: z.string().describe("Python source to execute."),
       }),
-      callback: (input) => guarded(() => client.python(input.sandbox, input.code)),
+      callback: (input: { sandbox: string; code: string }) =>
+        guarded(() => client.python(input.sandbox, input.code)),
     }),
 
     tool({
@@ -105,7 +115,8 @@ export async function makeRunewardTools(client: RunewardClient) {
         sandbox: z.string(),
         code: z.string().describe("JavaScript source to execute."),
       }),
-      callback: (input) => guarded(() => client.node(input.sandbox, input.code)),
+      callback: (input: { sandbox: string; code: string }) =>
+        guarded(() => client.node(input.sandbox, input.code)),
     }),
 
     tool({
@@ -115,7 +126,8 @@ export async function makeRunewardTools(client: RunewardClient) {
         sandbox: z.string(),
         path: z.string().describe("File path to read."),
       }),
-      callback: (input) => guarded(() => client.readFile(input.sandbox, input.path)),
+      callback: (input: { sandbox: string; path: string }) =>
+        guarded(() => client.readFile(input.sandbox, input.path)),
     }),
 
     tool({
@@ -126,7 +138,7 @@ export async function makeRunewardTools(client: RunewardClient) {
         path: z.string().describe("File path to write."),
         content: z.string().describe("Content to write."),
       }),
-      callback: (input) =>
+      callback: (input: { sandbox: string; path: string; content: string }) =>
         guarded(async () => `wrote ${await client.writeFile(input.sandbox, input.path, input.content)} bytes to ${input.path}`),
     }),
 
@@ -137,7 +149,8 @@ export async function makeRunewardTools(client: RunewardClient) {
         sandbox: z.string(),
         path: z.string().describe("Directory path to list."),
       }),
-      callback: (input) => guarded(() => client.listFiles(input.sandbox, input.path)),
+      callback: (input: { sandbox: string; path: string }) =>
+        guarded(() => client.listFiles(input.sandbox, input.path)),
     }),
 
     tool({
@@ -148,7 +161,8 @@ export async function makeRunewardTools(client: RunewardClient) {
         query: z.string().describe("Search query."),
         path: z.string().describe("Path to search under."),
       }),
-      callback: (input) => guarded(() => client.searchFiles(input.sandbox, input.query, input.path)),
+      callback: (input: { sandbox: string; query: string; path: string }) =>
+        guarded(() => client.searchFiles(input.sandbox, input.query, input.path)),
     }),
 
     tool({
@@ -164,7 +178,7 @@ export async function makeRunewardTools(client: RunewardClient) {
       inputSchema: z.object({
         sandbox: z.string(),
       }),
-      callback: (input) =>
+      callback: (input: { sandbox: string }) =>
         guarded(async () => {
           await client.killSandbox(input.sandbox);
           return `sandbox ${input.sandbox} terminated`;

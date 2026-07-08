@@ -8,6 +8,7 @@ import (
 func TestCommandRoundTrip(t *testing.T) {
 	in := Command{
 		Action:    "type",
+		Token:     "tok-123",
 		URL:       "https://example.com",
 		Selector:  "#login",
 		Expr:      "1+1",

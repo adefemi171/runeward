@@ -113,6 +113,12 @@ func (l *Ledger) VerifySignatures(pub ed25519.PublicKey, requireAll bool) error 
 }
 
 func verifyRecords(recs []Event, pub ed25519.PublicKey, requireAll bool) error {
+	hasVerifier := len(pub) == ed25519.PublicKeySize
+	if requireAll && !hasVerifier {
+		return errors.New("ledger: signatures required but no public key provided")
+	}
+	effectiveRequireAll := requireAll || hasVerifier
+
 	prev := ""
 	for i, ev := range recs {
 		if ev.Seq != i+1 {
@@ -125,9 +131,13 @@ func verifyRecords(recs []Event, pub ed25519.PublicKey, requireAll bool) error {
 			return fmt.Errorf("ledger: record seq %d: tampered, hash mismatch", ev.Seq)
 		}
 		if ev.Sig == "" {
-			if requireAll {
+			if effectiveRequireAll {
 				return fmt.Errorf("ledger: record seq %d: missing signature", ev.Seq)
 			}
+			prev = ev.Hash
+			continue
+		}
+		if !hasVerifier {
 			prev = ev.Hash
 			continue
 		}

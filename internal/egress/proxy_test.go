@@ -2,6 +2,7 @@ package egress
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -199,5 +200,58 @@ func TestHTTPAllowedForwards(t *testing.T) {
 	}
 	if string(body) != "hello-from-origin" {
 		t.Fatalf("body = %q, want hello-from-origin", body)
+	}
+}
+
+func TestConnectPinsResolvedIP(t *testing.T) {
+	targetAddr, stop := startTargetListener(t, "pong\n")
+	defer stop()
+	_, port, _ := net.SplitHostPort(targetAddr)
+
+	prevLookup := lookupIPAddrs
+	lookupIPAddrs = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+	defer func() { lookupIPAddrs = prevLookup }()
+
+	p := &Proxy{Policy: Policy{
+		Default: "deny",
+		Rules:   []Rule{{Verdict: "allow", Hostname: "api.example.test"}},
+	}}
+	srv := newProxyServer(t, p)
+	proxyAddr := strings.TrimPrefix(srv.URL, "http://")
+
+	conn, err := net.Dial("tcp", proxyAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	target := net.JoinHostPort("api.example.test", port)
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	br := bufio.NewReader(conn)
+	status, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status, "200") {
+		t.Fatalf("expected 200 Connection Established, got %q", status)
+	}
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line == "\r\n" || line == "\n" {
+			break
+		}
+	}
+	fmt.Fprintf(conn, "ping\n")
+	got, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(got) != "pong" {
+		t.Fatalf("tunnel echo = %q, want pong", got)
 	}
 }

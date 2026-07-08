@@ -7,9 +7,11 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
+	"github.com/Runewardd/runeward/internal/authz"
 	"github.com/Runewardd/runeward/internal/browser"
 	"github.com/Runewardd/runeward/internal/controlplane"
 	"github.com/Runewardd/runeward/internal/profile"
@@ -19,19 +21,122 @@ import (
 // Version is the reported MCP server implementation version.
 const Version = "0.1.0"
 
+const (
+	// EnvMCPDefaultPrincipal names the stdio principal to use when no HTTP
+	// request context exists.
+	EnvMCPDefaultPrincipal = "RUNEWARD_MCP_DEFAULT_PRINCIPAL"
+	// EnvMCPDefaultToken maps stdio sessions to an authz principal when
+	// RUNEWARD_AUTHZ_FILE is configured.
+	EnvMCPDefaultToken = "RUNEWARD_MCP_DEFAULT_TOKEN"
+)
+
+type principalIdentity struct {
+	Owner     string
+	Principal *authz.Principal
+}
+
+func (p principalIdentity) canLaunch(profileName string) bool {
+	if p.Principal == nil {
+		return true
+	}
+	return p.Principal.CanLaunch(profileName)
+}
+
+type principalResolver struct {
+	store          *authz.Store
+	stdioOwner     string
+	stdioPrincipal *authz.Principal
+}
+
+func newPrincipalResolver() (*principalResolver, error) {
+	store, err := authz.FromEnv()
+	if err != nil {
+		return nil, err
+	}
+	r := &principalResolver{
+		store:      store,
+		stdioOwner: strings.TrimSpace(os.Getenv(EnvMCPDefaultPrincipal)),
+	}
+	if r.stdioOwner == "" {
+		r.stdioOwner = "mcp-stdio"
+	}
+	if store == nil {
+		return r, nil
+	}
+	tok := strings.TrimSpace(os.Getenv(EnvMCPDefaultToken))
+	if tok == "" {
+		return nil, fmt.Errorf("%s is required when %s is configured", EnvMCPDefaultToken, authz.EnvFile)
+	}
+	p, ok := store.Identify(tok)
+	if !ok {
+		return nil, fmt.Errorf("%s does not match any principal in %s", EnvMCPDefaultToken, authz.EnvFile)
+	}
+	r.stdioOwner = p.Name
+	r.stdioPrincipal = p
+	return r, nil
+}
+
+func (r *principalResolver) resolve(req *sdk.CallToolRequest) (principalIdentity, error) {
+	if req == nil || req.GetExtra() == nil {
+		return principalIdentity{Owner: r.stdioOwner, Principal: r.stdioPrincipal}, nil
+	}
+	authHeader := ""
+	if h := req.GetExtra().Header; h != nil {
+		authHeader = h.Get("Authorization")
+	}
+	tok, ok := parseBearerToken(authHeader)
+	if !ok {
+		return principalIdentity{}, fmt.Errorf("missing bearer token")
+	}
+	if r.store == nil {
+		return principalIdentity{}, fmt.Errorf("RBAC is not configured (%s unset)", authz.EnvFile)
+	}
+	p, ok := r.store.Identify(tok)
+	if !ok {
+		return principalIdentity{}, fmt.Errorf("unknown bearer token")
+	}
+	return principalIdentity{Owner: p.Name, Principal: p}, nil
+}
+
+func parseBearerToken(header string) (string, bool) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return "", false
+	}
+	parts := strings.Fields(header)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
+		return "", false
+	}
+	if parts[1] == "" {
+		return "", false
+	}
+	return parts[1], true
+}
+
 // NewServer builds an MCP server with runeward's governed tools registered
 // against mgr.
 func NewServer(mgr *controlplane.Manager) *sdk.Server {
 	s := sdk.NewServer(&sdk.Implementation{Name: "runeward", Version: Version}, nil)
+	resolver, resolverErr := newPrincipalResolver()
 
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "runeward_create_sandbox",
 		Description: "Provision a governed, isolated sandbox from a named runeward profile and return its id. Use this before running any other tool.",
-	}, func(ctx context.Context, _ *sdk.CallToolRequest, in struct {
+	}, func(ctx context.Context, req *sdk.CallToolRequest, in struct {
 		Profile  string `json:"profile" jsonschema:"the runeward profile to provision (e.g. dev)"`
 		CopyFrom string `json:"copy_from,omitempty" jsonschema:"optional local directory whose contents are copied into the fresh workspace at creation (overrides the profile's host.copy_from)"`
 	}) (*sdk.CallToolResult, any, error) {
-		sb, err := mgr.CreateSandbox(ctx, in.Profile, controlplane.CreateOptions{CopyFrom: in.CopyFrom})
+		if resolverErr != nil {
+			return errText(resolverErr), nil, nil
+		}
+		principal, err := resolver.resolve(req)
+		if err != nil {
+			return errText(err), nil, nil
+		}
+		if !principal.canLaunch(in.Profile) {
+			return errText(fmt.Errorf("principal %q is not allowed to launch profile %q", principal.Owner, in.Profile)), nil, nil
+		}
+		sb, err := mgr.CreateSandbox(ctx, in.Profile, controlplane.CreateOptions{CopyFrom: in.CopyFrom, Owner: principal.Owner})
 		if err != nil {
 			return errText(err), nil, nil
 		}
@@ -210,19 +315,29 @@ func NewServer(mgr *controlplane.Manager) *sdk.Server {
 		return text("sandbox " + in.Sandbox + " terminated"), nil, nil
 	})
 
-	registerFleetTools(s, mgr)
+	registerFleetTools(s, mgr, resolver, resolverErr)
 	return s
 }
 
 // registerFleetTools adds the fleet orchestration tools (a fleet is N sandboxes
 // sharing a task board).
-func registerFleetTools(s *sdk.Server, mgr *controlplane.Manager) {
+func registerFleetTools(s *sdk.Server, mgr *controlplane.Manager, resolver *principalResolver, resolverErr error) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "runeward_create_fleet",
 		Description: "Provision a fleet: N governed sandboxes (from the profile's [fleet].replicas) sharing an atomic task board seeded from the profile's task_board. Returns the fleet id and member sandbox ids.",
-	}, func(ctx context.Context, _ *sdk.CallToolRequest, in struct {
+	}, func(ctx context.Context, req *sdk.CallToolRequest, in struct {
 		Profile string `json:"profile" jsonschema:"the runeward profile to provision the fleet from"`
 	}) (*sdk.CallToolResult, any, error) {
+		if resolverErr != nil {
+			return errText(resolverErr), nil, nil
+		}
+		principal, err := resolver.resolve(req)
+		if err != nil {
+			return errText(err), nil, nil
+		}
+		if !principal.canLaunch(in.Profile) {
+			return errText(fmt.Errorf("principal %q is not allowed to launch profile %q", principal.Owner, in.Profile)), nil, nil
+		}
 		v, err := mgr.CreateFleet(ctx, in.Profile)
 		if err != nil {
 			return errText(err), nil, nil
@@ -291,11 +406,21 @@ func registerFleetTools(s *sdk.Server, mgr *controlplane.Manager) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "runeward_claim_task",
 		Description: "Atomically claim the next pending task from a fleet's board for a worker. Returns the task, or reports the board is empty.",
-	}, func(ctx context.Context, _ *sdk.CallToolRequest, in struct {
+	}, func(ctx context.Context, req *sdk.CallToolRequest, in struct {
 		Fleet string `json:"fleet" jsonschema:"the fleet id"`
 		Owner string `json:"owner" jsonschema:"an identifier for the claiming worker"`
 	}) (*sdk.CallToolResult, any, error) {
-		t, ok, err := mgr.ClaimTask(in.Fleet, in.Owner)
+		if resolverErr != nil {
+			return errText(resolverErr), nil, nil
+		}
+		principal, err := resolver.resolve(req)
+		if err != nil {
+			return errText(err), nil, nil
+		}
+		if in.Owner != "" && in.Owner != principal.Owner {
+			return errText(fmt.Errorf("owner must match authenticated principal %q", principal.Owner)), nil, nil
+		}
+		t, ok, err := mgr.ClaimTask(in.Fleet, principal.Owner)
 		if err != nil {
 			return errText(err), nil, nil
 		}
@@ -308,12 +433,22 @@ func registerFleetTools(s *sdk.Server, mgr *controlplane.Manager) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "runeward_heartbeat_task",
 		Description: "Extend the lease on a task a worker still holds so the fleet sweeper does not requeue it as a dead worker.",
-	}, func(ctx context.Context, _ *sdk.CallToolRequest, in struct {
+	}, func(ctx context.Context, req *sdk.CallToolRequest, in struct {
 		Fleet string `json:"fleet" jsonschema:"the fleet id"`
 		Task  string `json:"task" jsonschema:"the task id"`
 		Owner string `json:"owner" jsonschema:"the worker that holds the claim"`
 	}) (*sdk.CallToolResult, any, error) {
-		t, err := mgr.HeartbeatTask(in.Fleet, in.Task, in.Owner)
+		if resolverErr != nil {
+			return errText(resolverErr), nil, nil
+		}
+		principal, err := resolver.resolve(req)
+		if err != nil {
+			return errText(err), nil, nil
+		}
+		if in.Owner != "" && in.Owner != principal.Owner {
+			return errText(fmt.Errorf("owner must match authenticated principal %q", principal.Owner)), nil, nil
+		}
+		t, err := mgr.HeartbeatTask(in.Fleet, in.Task, principal.Owner)
 		if err != nil {
 			return errText(err), nil, nil
 		}
@@ -323,13 +458,23 @@ func registerFleetTools(s *sdk.Server, mgr *controlplane.Manager) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "runeward_complete_task",
 		Description: "Mark a claimed task as done with its result.",
-	}, func(ctx context.Context, _ *sdk.CallToolRequest, in struct {
+	}, func(ctx context.Context, req *sdk.CallToolRequest, in struct {
 		Fleet  string `json:"fleet" jsonschema:"the fleet id"`
 		Task   string `json:"task" jsonschema:"the task id"`
 		Owner  string `json:"owner,omitempty" jsonschema:"the worker that holds the claim"`
 		Result string `json:"result,omitempty" jsonschema:"the successful result output"`
 	}) (*sdk.CallToolResult, any, error) {
-		if err := mgr.CompleteTask(in.Fleet, in.Task, in.Owner, in.Result); err != nil {
+		if resolverErr != nil {
+			return errText(resolverErr), nil, nil
+		}
+		principal, err := resolver.resolve(req)
+		if err != nil {
+			return errText(err), nil, nil
+		}
+		if in.Owner != "" && in.Owner != principal.Owner {
+			return errText(fmt.Errorf("owner must match authenticated principal %q", principal.Owner)), nil, nil
+		}
+		if err := mgr.CompleteTask(in.Fleet, in.Task, principal.Owner, in.Result); err != nil {
 			return errText(err), nil, nil
 		}
 		return text("task " + in.Task + " completed"), nil, nil
@@ -338,14 +483,24 @@ func registerFleetTools(s *sdk.Server, mgr *controlplane.Manager) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "runeward_fail_task",
 		Description: "Mark a claimed task as failed. Set requeue=true to return it to the pending pool for retry.",
-	}, func(ctx context.Context, _ *sdk.CallToolRequest, in struct {
+	}, func(ctx context.Context, req *sdk.CallToolRequest, in struct {
 		Fleet   string `json:"fleet" jsonschema:"the fleet id"`
 		Task    string `json:"task" jsonschema:"the task id"`
 		Owner   string `json:"owner,omitempty" jsonschema:"the worker that holds the claim"`
 		Error   string `json:"error,omitempty" jsonschema:"the failure message"`
 		Requeue bool   `json:"requeue,omitempty" jsonschema:"whether to requeue the task for retry"`
 	}) (*sdk.CallToolResult, any, error) {
-		if err := mgr.FailTask(in.Fleet, in.Task, in.Owner, in.Error, in.Requeue); err != nil {
+		if resolverErr != nil {
+			return errText(resolverErr), nil, nil
+		}
+		principal, err := resolver.resolve(req)
+		if err != nil {
+			return errText(err), nil, nil
+		}
+		if in.Owner != "" && in.Owner != principal.Owner {
+			return errText(fmt.Errorf("owner must match authenticated principal %q", principal.Owner)), nil, nil
+		}
+		if err := mgr.FailTask(in.Fleet, in.Task, principal.Owner, in.Error, in.Requeue); err != nil {
 			return errText(err), nil, nil
 		}
 		verb := "failed"

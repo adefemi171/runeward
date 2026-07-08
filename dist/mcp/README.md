@@ -23,8 +23,10 @@ The MCP registry is published to with the official [`mcp-publisher`][publisher]
 CLI. From this directory:
 
 ```bash
-# 1. Install the publisher CLI (see the docs for your platform).
-#    e.g. via Go: go install github.com/modelcontextprotocol/registry/cmd/mcp-publisher@latest
+# 1. Install the publisher CLI (macOS/Linux). Homebrew:
+brew install mcp-publisher
+#    …or grab the prebuilt release binary:
+#    curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher && sudo mv mcp-publisher /usr/local/bin/
 
 # 2. Authenticate. GitHub auth proves you own the io.github.Runewardd/* namespace.
 mcp-publisher login github
@@ -35,8 +37,12 @@ mcp-publisher publish ./server.json
 
 The `name` namespace (`io.github.Runewardd/...`) must match the GitHub account
 you authenticate as — that ownership check is how the registry prevents
-namespace squatting. Bump `version` on every release and keep it in sync with
-the OCI image tag under `packages[].version`.
+namespace squatting. Because this is an **organization** namespace, your
+membership in `Runewardd` must be **public** for GitHub auth to grant it
+(Org → People → publicize membership), and you must re-run
+`mcp-publisher login github` after changing that so the token reflects it.
+Bump `version` on every release and keep it in sync with the OCI image tag under
+`packages[].version`.
 
 ## Configure runeward as an MCP server in a client
 

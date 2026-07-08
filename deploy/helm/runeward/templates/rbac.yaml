@@ -1,25 +1,27 @@
 {{- if .Values.rbac.create -}}
-{{- $clusterScoped := and .Values.controller.enabled .Values.controller.allNamespaces -}}
-{{- $kind := ternary "ClusterRole" "Role" $clusterScoped -}}
-{{- $bindingKind := ternary "ClusterRoleBinding" "RoleBinding" $clusterScoped -}}
+{{- $controllerClusterScoped := and .Values.controller.enabled .Values.controller.allNamespaces -}}
+{{- $controllerRoleKind := ternary "ClusterRole" "Role" $controllerClusterScoped -}}
+{{- $controllerBindingKind := ternary "ClusterRoleBinding" "RoleBinding" $controllerClusterScoped -}}
+{{- $controllerSA := default (default (printf "%s-controller" (include "runeward.fullname" .)) .Values.serviceAccount.name) .Values.serviceAccount.controller.name -}}
+{{- $serverSA := default (default (printf "%s-server" (include "runeward.fullname" .)) .Values.serviceAccount.name) .Values.serviceAccount.server.name -}}
+{{- if .Values.controller.enabled }}
 apiVersion: rbac.authorization.k8s.io/v1
-kind: {{ $kind }}
+kind: {{ $controllerRoleKind }}
 metadata:
-  name: {{ include "runeward.fullname" . }}
-  {{- if not $clusterScoped }}
+  name: {{ include "runeward.fullname" . }}-controller
+  {{- if not $controllerClusterScoped }}
   namespace: {{ .Release.Namespace }}
   {{- end }}
   labels:
     {{- include "runeward.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
 rules:
-  {{- if .Values.controller.enabled }}
   - apiGroups: ["runeward.dev"]
     resources: ["sandboxes", "fleets"]
     verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["runeward.dev"]
     resources: ["sandboxes/status", "fleets/status"]
     verbs: ["get", "update", "patch"]
-  {{- end }}
   - apiGroups: [""]
     resources: ["pods", "pods/exec", "persistentvolumeclaims", "configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -28,31 +30,32 @@ rules:
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: {{ $bindingKind }}
+kind: {{ $controllerBindingKind }}
 metadata:
-  name: {{ include "runeward.fullname" . }}
-  {{- if not $clusterScoped }}
+  name: {{ include "runeward.fullname" . }}-controller
+  {{- if not $controllerClusterScoped }}
   namespace: {{ .Release.Namespace }}
   {{- end }}
   labels:
     {{- include "runeward.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: {{ $kind }}
-  name: {{ include "runeward.fullname" . }}
+  kind: {{ $controllerRoleKind }}
+  name: {{ include "runeward.fullname" . }}-controller
 subjects:
   - kind: ServiceAccount
-    name: {{ include "runeward.serviceAccountName" . }}
+    name: {{ $controllerSA }}
     namespace: {{ .Release.Namespace }}
-{{- if .Values.controller.enabled }}
 ---
 # ClusterSandbox/ClusterFleet always need a ClusterRole (cluster-scoped CRs).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "runeward.fullname" . }}-cluster
+  name: {{ include "runeward.fullname" . }}-controller-cluster
   labels:
     {{- include "runeward.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
 rules:
   - apiGroups: ["runeward.dev"]
     resources: ["clustersandboxes", "clusterfleets"]
@@ -60,20 +63,64 @@ rules:
   - apiGroups: ["runeward.dev"]
     resources: ["clustersandboxes/status", "clusterfleets/status"]
     verbs: ["get", "update", "patch"]
+  # The k8s backend calls ensureNamespace (get + best-effort PSA-label patch,
+  # and create when provisioning into a namespace that does not yet exist).
+  # namespaces are cluster-scoped, so this rule must live on the ClusterRole.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "runeward.fullname" . }}-cluster
+  name: {{ include "runeward.fullname" . }}-controller-cluster
   labels:
     {{- include "runeward.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "runeward.fullname" . }}-cluster
+  name: {{ include "runeward.fullname" . }}-controller-cluster
 subjects:
   - kind: ServiceAccount
-    name: {{ include "runeward.serviceAccountName" . }}
+    name: {{ $controllerSA }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if and .Values.controller.enabled .Values.server.enabled }}
+---
+{{- end }}
+{{- if .Values.server.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "runeward.fullname" . }}-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runeward.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "persistentvolumeclaims", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "runeward.fullname" . }}-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runeward.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "runeward.fullname" . }}-server
+subjects:
+  - kind: ServiceAccount
+    name: {{ $serverSA }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
 {{- end }}

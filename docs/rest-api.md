@@ -108,10 +108,10 @@ created; admins see all.
 ## Example
 
 ```bash
-AUTH="-H Authorization:Bearer $RUNEWARD_API_TOKEN"   # omit if serving without a token
-SB=$(curl -s $AUTH -X POST localhost:8080/v1/sandboxes -d '{"profile":"ns-auto"}' | jq -r .id)
-curl -s $AUTH -X POST "localhost:8080/v1/sandboxes/$SB/shell/exec" -d '{"command":["echo","hi"]}'
-curl -s $AUTH -X POST "localhost:8080/v1/sandboxes/$SB/usage" -d '{"tokens":1200,"cost_usd":0.03}'
-curl -s $AUTH "localhost:8080/v1/audit/verify"
-curl -s $AUTH -X DELETE "localhost:8080/v1/sandboxes/$SB"
+AUTH=(-H "Authorization: Bearer $RUNEWARD_API_TOKEN")   # omit when serving without a token: AUTH=()
+SB=$(curl -s "${AUTH[@]}" -X POST localhost:8080/v1/sandboxes -d '{"profile":"ns-auto"}' | jq -r .id)
+curl -s "${AUTH[@]}" -X POST "localhost:8080/v1/sandboxes/$SB/shell/exec" -d '{"command":["echo","hi"]}'
+curl -s "${AUTH[@]}" -X POST "localhost:8080/v1/sandboxes/$SB/usage" -d '{"tokens":1200,"cost_usd":0.03}'
+curl -s "${AUTH[@]}" "localhost:8080/v1/audit/verify"
+curl -s "${AUTH[@]}" -X DELETE "localhost:8080/v1/sandboxes/$SB"
 ```

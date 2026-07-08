@@ -37,6 +37,9 @@ type Profile struct {
 	Files   []File       `toml:"file" json:"file"`
 	Network Network      `toml:"network" json:"network"`
 	Policy  []PolicyRule `toml:"policy" json:"policy"`
+	// PolicyDefault controls the fallback verdict when no policy rule matches.
+	// Empty keeps the historical default ("allow"); set to "deny" to fail closed.
+	PolicyDefault Verdict `toml:"policy_default" json:"policy_default"`
 	// PolicyEngine is "" or "builtin" (the [[policy]] rules), "cel", or "rego".
 	// Selecting cel or rego makes the [[policy]] rules ignored.
 	PolicyEngine string     `toml:"policy_engine" json:"policy_engine"`
@@ -242,6 +245,8 @@ type Audit struct {
 	Sink string `toml:"sink" json:"sink"`
 	// Redact stores hashes instead of sensitive payloads. Defaults to true.
 	Redact *bool `toml:"redact" json:"redact"`
+	// ScrubPatterns appends operator-defined regexes to built-in secret scrubbing.
+	ScrubPatterns []string `toml:"scrub_patterns" json:"scrub_patterns"`
 }
 
 // RedactEnabled reports the effective redaction setting (defaults to true).

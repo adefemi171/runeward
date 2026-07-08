@@ -12,8 +12,16 @@ fullnameOverride: ""
 
 serviceAccount:
   create: true
+  # Legacy override applied as fallback to all components when per-component
+  # serviceAccount names are not set.
   name: ""
   annotations: {}
+  controller:
+    name: ""
+  server:
+    name: ""
+  webhook:
+    name: ""
 
 rbac:
   create: true
@@ -22,6 +30,8 @@ controller:
   enabled: true
   replicas: 1
   workers: 2
+  # Keep namespace scope by default; enabling this expands controller RBAC to
+  # cluster-wide pod and exec access.
   allNamespaces: false
   resources:
     requests:
@@ -32,7 +42,7 @@ controller:
       memory: 256Mi
 
 webhook:
-  enabled: false
+  enabled: true
   port: 8443
   # >1 is safe: replicas share one serving cert via a Secret (see cert-secret).
   replicas: 2

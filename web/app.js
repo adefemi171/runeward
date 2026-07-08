@@ -25,6 +25,12 @@ const state = {
   termSandbox: null, // which sandbox the current socket belongs to
   // polling handles
   timers: { global: null, audit: null },
+  // policy simulation
+  simulation: null,
+  // egress explorer
+  egress: [],
+  // budget view
+  budget: null,
 };
 
 /* ---------------- DOM helpers ---------------- */
@@ -51,10 +57,8 @@ function el(tag, attrs = {}, children = []) {
 }
 
 /* ---------------- Auth ---------------- */
-const AUTH_KEY = "runeward.token";
-
 const auth = {
-  token: localStorage.getItem(AUTH_KEY) || "",
+  token: "",
   principal: null,
   rbac: false,
   onRequired: null, // callback invoked on a 401 (shows the login overlay)
@@ -62,8 +66,6 @@ const auth = {
 
 function setToken(tok) {
   auth.token = (tok || "").trim();
-  if (auth.token) localStorage.setItem(AUTH_KEY, auth.token);
-  else localStorage.removeItem(AUTH_KEY);
 }
 
 // canApprove reports whether the current identity may resolve approvals. Open
@@ -204,9 +206,11 @@ async function loadProfiles() {
     state.profiles = (data && data.profiles) || [];
     fillProfileSelect($("#profile-select"));
     fillProfileSelect($("#fleet-profile-select"));
+    fillProfileSelect($("#sim-profile-select"));
   } catch (e) {
     fillProfileSelect($("#profile-select"), "profiles unavailable");
     fillProfileSelect($("#fleet-profile-select"), "profiles unavailable");
+    fillProfileSelect($("#sim-profile-select"), "profiles unavailable");
     toast("Could not load profiles: " + e.message, "error");
   }
 }
@@ -332,6 +336,10 @@ function selectSandbox(id) {
     bodyEl.classList.add("hidden");
     teardownTerminalSocket();
     stopAuditPoll();
+    state.egress = [];
+    state.budget = null;
+    renderEgress();
+    renderBudget();
     return;
   }
   empty.classList.add("hidden");
@@ -340,6 +348,10 @@ function selectSandbox(id) {
   const sb = state.sandboxes.find((s) => s.id === id) || {};
   $("#sel-id").textContent = id;
   $("#sel-meta").textContent = `${sb.profile || "—"} · ${sb.backend || "—"} · ${sb.image || "—"} · ${sb.status || "—"}`;
+  const simSel = $("#sim-profile-select");
+  if (simSel && sb.profile) {
+    simSel.value = sb.profile;
+  }
 
   // Re-activate the current tab for the new sandbox.
   activateTab(state.activeTab, true);
@@ -683,6 +695,15 @@ function activateTab(name, force = false) {
     refreshAudit();
     startAuditPoll();
   }
+  if (name === "policy") {
+    renderSimulationResults();
+  }
+  if (name === "egress") {
+    refreshEgress();
+  }
+  if (name === "budget") {
+    refreshBudget();
+  }
 }
 
 /* ---------------- Terminal (xterm.js + WebSocket) ---------------- */
@@ -768,47 +789,57 @@ function connectTerminal(forceReconnect = false) {
   teardownTerminalSocket();
 
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  let url = `${proto}//${location.host}/v1/sandboxes/${encodeURIComponent(state.selected)}/terminal`;
-  // Browsers can't set headers on a WebSocket handshake, so the token rides as
-  // a query param (the server accepts ?token= for exactly this reason).
-  if (auth.token) url += `?token=${encodeURIComponent(auth.token)}`;
   setTermStatus("conn-off", "connecting…");
+  requestTerminalTicket(state.selected)
+    .then((ticket) => {
+      const url =
+        `${proto}//${location.host}/v1/sandboxes/${encodeURIComponent(state.selected)}/terminal` +
+        `?ticket=${encodeURIComponent(ticket)}`;
+      const socket = new WebSocket(url);
+      socket.binaryType = "arraybuffer";
+      state.socket = socket;
+      state.termSandbox = state.selected;
 
-  let socket;
-  try {
-    socket = new WebSocket(url);
-  } catch (e) {
-    setTermStatus("conn-err", "error");
-    toast("Terminal connect failed: " + e.message, "error");
-    return;
+      socket.onopen = () => {
+        setTermStatus("conn-on", "connected");
+        fitAndResize();
+        state.term.focus();
+      };
+      socket.onmessage = (ev) => {
+        if (typeof ev.data === "string") {
+          state.term.write(ev.data);
+        } else if (ev.data instanceof ArrayBuffer) {
+          state.term.write(new Uint8Array(ev.data));
+        } else if (ev.data instanceof Blob) {
+          ev.data.arrayBuffer().then((buf) => state.term.write(new Uint8Array(buf)));
+        }
+      };
+      socket.onerror = () => {
+        setTermStatus("conn-err", "error");
+      };
+      socket.onclose = () => {
+        if (state.socket === socket) {
+          setTermStatus("conn-off", "disconnected");
+          state.socket = null;
+        }
+      };
+    })
+    .catch((e) => {
+      setTermStatus("conn-err", "error");
+      toast("Terminal connect failed: " + e.message, "error");
+    });
+}
+
+async function requestTerminalTicket(sandboxID) {
+  const { data } = await api("POST", "/v1/tickets", {
+    kind: "terminal",
+    sandbox_id: sandboxID,
+    ttl_seconds: 30,
+  });
+  if (!data || !data.ticket) {
+    throw new Error("terminal ticket unavailable");
   }
-  socket.binaryType = "arraybuffer";
-  state.socket = socket;
-  state.termSandbox = state.selected;
-
-  socket.onopen = () => {
-    setTermStatus("conn-on", "connected");
-    fitAndResize();
-    state.term.focus();
-  };
-  socket.onmessage = (ev) => {
-    if (typeof ev.data === "string") {
-      state.term.write(ev.data);
-    } else if (ev.data instanceof ArrayBuffer) {
-      state.term.write(new Uint8Array(ev.data));
-    } else if (ev.data instanceof Blob) {
-      ev.data.arrayBuffer().then((buf) => state.term.write(new Uint8Array(buf)));
-    }
-  };
-  socket.onerror = () => {
-    setTermStatus("conn-err", "error");
-  };
-  socket.onclose = () => {
-    if (state.socket === socket) {
-      setTermStatus("conn-off", "disconnected");
-      state.socket = null;
-    }
-  };
+  return data.ticket;
 }
 
 /* ---------------- Files tab ---------------- */
@@ -1089,6 +1120,251 @@ async function decideApproval(id, decision) {
 function openDrawer() { $("#approvals-drawer").classList.remove("hidden"); refreshApprovals(); }
 function closeDrawer() { $("#approvals-drawer").classList.add("hidden"); }
 
+/* ---------------- Policy simulation ---------------- */
+function parseSimulationActions(text) {
+  const out = [];
+  const lines = String(text || "").split(/\r?\n/);
+  for (const line of lines) {
+    const raw = line.trim();
+    if (!raw || raw.startsWith("#")) continue;
+    const parts = raw.split("|");
+    if (parts.length < 2) {
+      throw new Error(`invalid action line: "${raw}" (use "tool | action")`);
+    }
+    const tool = parts[0].trim();
+    const action = parts.slice(1).join("|").trim();
+    if (!tool || !action) {
+      throw new Error(`invalid action line: "${raw}"`);
+    }
+    out.push({ tool, command: action, args: tokenize(action) });
+  }
+  return out;
+}
+
+async function runPolicySimulation() {
+  const note = $("#sim-note");
+  note.className = "note";
+  note.textContent = "";
+  if (!state.selected) {
+    note.className = "note warn";
+    note.textContent = "Select a sandbox first.";
+    return;
+  }
+  const raw = $("#sim-actions").value;
+  let actions;
+  try {
+    actions = parseSimulationActions(raw);
+  } catch (e) {
+    note.className = "note err";
+    note.textContent = e.message;
+    return;
+  }
+  if (!actions.length) {
+    note.className = "note warn";
+    note.textContent = "Add one or more sample actions.";
+    return;
+  }
+  const useSelected = $("#sim-use-selected-profile").checked;
+  const selectedSB = state.sandboxes.find((s) => s.id === state.selected) || {};
+  const profileName = useSelected ? (selectedSB.profile || "") : ($("#sim-profile-select").value || "");
+  if (!profileName) {
+    note.className = "note warn";
+    note.textContent = "Pick a profile to simulate.";
+    return;
+  }
+  const btn = $("#sim-run");
+  btn.disabled = true;
+  try {
+    const { data } = await api("POST", "/v1/policy/simulate", {
+      profile_name: profileName,
+      actions,
+    });
+    state.simulation = data || {};
+    renderSimulationResults();
+    note.className = "note ok";
+    note.textContent = `Simulated ${actions.length} action${actions.length === 1 ? "" : "s"} against ${profileName}.`;
+  } catch (e) {
+    note.className = "note err";
+    note.textContent = "Simulation failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderSimulationResults() {
+  const wrap = $("#sim-results");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  const results = (state.simulation && state.simulation.results) || [];
+  if (!results.length) {
+    wrap.className = "sim-results empty-note";
+    wrap.textContent = "Run a simulation to see verdicts and trace.";
+    return;
+  }
+  wrap.className = "sim-results";
+  for (const r of results) {
+    const verdict = String(r.verdict || "allow");
+    const title = r.name || `${r.tool || "action"} ${r.arg || ""}`.trim();
+    const trace = Array.isArray(r.trace) ? r.trace : [];
+    const traceText = trace.map((step) => {
+      const idx = step.index != null ? `#${step.index}` : "";
+      const engine = step.engine || "";
+      const match = step.matched ? "match" : "skip";
+      const summary = step.expr || step.match || step.query || step.tool || "";
+      return `${idx} ${engine} ${match} ${summary}`.trim();
+    }).join("\n");
+    wrap.appendChild(
+      el("div", { class: "sim-item" }, [
+        el("div", { class: "sim-head" }, [
+          el("span", { class: "mono", text: title }),
+          el("span", { class: "verdict " + verdict, text: verdict }),
+        ]),
+        r.reason ? el("div", { class: "note " + (verdict === "deny" ? "err" : "warn"), text: r.reason }) : null,
+        traceText ? el("div", { class: "sim-trace", text: traceText }) : null,
+      ])
+    );
+  }
+}
+
+/* ---------------- Egress explorer ---------------- */
+async function refreshEgress() {
+  if (!state.selected) return;
+  try {
+    const { data } = await api("GET", sbPath("/egress"));
+    state.egress = (data && data.decisions) || [];
+  } catch (e) {
+    state.egress = [];
+  }
+  renderEgress();
+}
+
+function renderEgress() {
+  const body = $("#egress-body");
+  if (!body) return;
+  body.innerHTML = "";
+  if (!state.selected) {
+    body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "empty-note", text: "Select a sandbox first." })));
+    return;
+  }
+  if (!state.egress.length) {
+    body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "empty-note", text: "No decisions yet." })));
+    return;
+  }
+  for (const d of state.egress.slice().reverse()) {
+    body.appendChild(el("tr", {}, [
+      el("td", { text: fmtTime(d.timestamp || d.time) }),
+      el("td", { text: d.host || "—", title: d.host || "" }),
+      el("td", { text: d.ip || "—" }),
+      el("td", {}, el("span", { class: "verdict-cell " + (d.allow ? "allow" : "deny"), text: d.allow ? "allow" : "deny" })),
+      el("td", { text: d.reason || "", title: d.reason || "" }),
+    ]));
+  }
+}
+
+/* ---------------- Budget burn-down ---------------- */
+async function refreshBudget() {
+  if (!state.selected) return;
+  try {
+    const [sbRes, auditRes] = await Promise.all([
+      api("GET", sbPath("")),
+      api("GET", sbPath("/audit")),
+    ]);
+    state.budget = deriveBudget(sbRes.data || {}, (auditRes.data && auditRes.data.events) || []);
+  } catch (e) {
+    state.budget = null;
+  }
+  renderBudget();
+}
+
+function deriveBudget(sb, events) {
+  const limits = sb.limits || {};
+  const usage = sb.usage || {};
+  const execCount = events.filter((ev) => ev.tool && ev.tool !== "approval" && ev.tool !== "usage").length;
+  const egressCount = events.filter((ev) => ev.tool === "browser" || ev.tool === "net").length;
+  let wallSeconds = 0;
+  if (events.length > 1) {
+    const times = events
+      .map((ev) => new Date(ev.time).getTime())
+      .filter((v) => Number.isFinite(v))
+      .sort((a, b) => a - b);
+    if (times.length > 1) {
+      wallSeconds = Math.max(0, Math.floor((times[times.length - 1] - times[0]) / 1000));
+    }
+  }
+  return {
+    usage: {
+      tokens: usage.tokens || 0,
+      cost_usd: usage.cost_usd || 0,
+      execs: execCount,
+      egress_requests: egressCount,
+      wall_seconds: wallSeconds,
+    },
+    limits: {
+      max_tokens: limits.max_tokens || 0,
+      max_cost_usd: limits.max_cost_usd || 0,
+      max_execs: limits.max_execs || 0,
+      egress_requests: limits.egress_requests || 0,
+      wall_clock: limits.wall_clock || "",
+    },
+  };
+}
+
+function parseDurationSeconds(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return 0;
+  let total = 0;
+  const re = /(\d+)(h|m|s)/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    const n = Number(m[1]);
+    if (m[2] === "h") total += n * 3600;
+    else if (m[2] === "m") total += n * 60;
+    else total += n;
+  }
+  return total;
+}
+
+function money(v) {
+  return "$" + Number(v || 0).toFixed(4);
+}
+
+function renderBudget() {
+  const grid = $("#budget-grid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  if (!state.selected) {
+    grid.appendChild(el("div", { class: "empty-note", text: "Select a sandbox first." }));
+    return;
+  }
+  if (!state.budget) {
+    grid.appendChild(el("div", { class: "empty-note", text: "Budget usage unavailable." }));
+    return;
+  }
+  const u = state.budget.usage;
+  const lim = state.budget.limits;
+  const rows = [
+    { label: "Tokens", used: u.tokens, limit: lim.max_tokens, usedLabel: String(u.tokens), limitLabel: lim.max_tokens ? String(lim.max_tokens) : "unlimited" },
+    { label: "Cost USD", used: u.cost_usd, limit: lim.max_cost_usd, usedLabel: money(u.cost_usd), limitLabel: lim.max_cost_usd ? money(lim.max_cost_usd) : "unlimited" },
+    { label: "Exec actions", used: u.execs, limit: lim.max_execs, usedLabel: String(u.execs), limitLabel: lim.max_execs ? String(lim.max_execs) : "unlimited" },
+    { label: "Egress requests", used: u.egress_requests, limit: lim.egress_requests, usedLabel: String(u.egress_requests), limitLabel: lim.egress_requests ? String(lim.egress_requests) : "unlimited" },
+    {
+      label: "Wall clock",
+      used: u.wall_seconds,
+      limit: parseDurationSeconds(lim.wall_clock),
+      usedLabel: `${u.wall_seconds}s`,
+      limitLabel: lim.wall_clock || "unlimited",
+    },
+  ];
+  for (const row of rows) {
+    const ratio = row.limit > 0 ? Math.min(1, row.used / row.limit) : 0;
+    grid.appendChild(el("div", { class: "budget-card" }, [
+      el("div", { class: "budget-label", text: row.label }),
+      el("div", { class: "budget-value", text: `${row.usedLabel} / ${row.limitLabel}` }),
+      el("div", { class: "budget-bar" }, el("div", { class: "budget-fill", style: `width:${Math.round(ratio * 100)}%` })),
+    ]));
+  }
+}
+
 /* ---------------- Utilities ---------------- */
 function fmtTime(t) {
   if (!t) return "";
@@ -1115,6 +1391,8 @@ function startGlobalPoll() {
       loadSandboxes(),
       canApprove() ? refreshApprovals() : Promise.resolve(),
       state.activeView === "fleets" ? refreshFleets() : Promise.resolve(),
+      state.activeTab === "egress" ? refreshEgress() : Promise.resolve(),
+      state.activeTab === "budget" ? refreshBudget() : Promise.resolve(),
     ]);
   };
   tick();
@@ -1160,6 +1438,9 @@ function wireEvents() {
   $("#shell-run").addEventListener("click", runShell);
   $("#shell-cmd").addEventListener("keydown", (e) => { if (e.key === "Enter") runShell(); });
   $("#code-run").addEventListener("click", runCode);
+  $("#sim-run").addEventListener("click", runPolicySimulation);
+  $("#sim-actions").addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") runPolicySimulation(); });
+  $("#egress-refresh").addEventListener("click", refreshEgress);
 
   $("#approvals-btn").addEventListener("click", openDrawer);
   $$("[data-close-drawer]").forEach((n) => n.addEventListener("click", closeDrawer));
@@ -1239,9 +1520,8 @@ async function bootSession() {
       showLogin();
       return;
     }
-    // whoami unavailable (older server / no auth): treat as open mode so the
-    // dashboard still works against a control plane without authentication.
-    auth.principal = { name: "", admin: true, can_approve: true, can_launch: true };
+    // whoami unavailable (older server / no auth): fall back to least privilege.
+    auth.principal = { name: "", admin: false, can_approve: false, can_launch: false };
     auth.rbac = false;
     hideLogin();
     applyPrincipal();

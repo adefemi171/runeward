@@ -76,8 +76,8 @@ func (e *Engine) Evaluate(a Action) Decision {
 
 // argvMatches reports whether the action's executable matches pattern. It
 // inspects argv[0], and when the command runs through a shell wrapper
-// (sh/bash -c "…") it also matches against the first token of the wrapped
-// script, so `sh -c 'rm -rf /'` is caught by a match_argv rule on "rm".
+// (sh/bash/... -c "…"), including env prefixes and busybox multicall forms, it
+// also matches against the first token of the wrapped script.
 func argvMatches(pattern string, a Action) bool {
 	for _, cand := range argvCandidates(a) {
 		if matchGlob(pattern, cand) {
@@ -88,8 +88,8 @@ func argvMatches(pattern string, a Action) bool {
 }
 
 // argvCandidates returns the executable names a match_argv rule should test:
-// argv[0], its basename, and (for shell wrappers) the first token of the
-// -c script plus its basename.
+// argv[0], its basename, and (for shell wrappers) the first token of the -c
+// script plus its basename.
 func argvCandidates(a Action) []string {
 	argv := a.Args
 	if len(argv) == 0 {
@@ -99,22 +99,63 @@ func argvCandidates(a Action) []string {
 		return nil
 	}
 	out := []string{argv[0], baseName(argv[0])}
-	if isShell(argv[0]) {
-		for i := 1; i < len(argv); i++ {
-			if argv[i] == "-c" && i+1 < len(argv) {
-				if tok := firstToken(argv[i+1]); tok != "" {
-					out = append(out, tok, baseName(tok))
-				}
-				break
-			}
-		}
+	if tok := wrappedShellToken(argv); tok != "" {
+		out = append(out, tok, baseName(tok))
 	}
 	return out
 }
 
-func isShell(p string) bool {
+func wrappedShellToken(argv []string) string {
+	unwrapped := unwrapEnvPrefix(argv)
+	if len(unwrapped) == 0 {
+		return ""
+	}
+	if baseName(unwrapped[0]) == "busybox" {
+		if len(unwrapped) < 2 || !isShellName(unwrapped[1]) {
+			return ""
+		}
+		unwrapped = unwrapped[1:]
+	}
+	if !isShellName(unwrapped[0]) {
+		return ""
+	}
+	for i := 1; i < len(unwrapped); i++ {
+		if unwrapped[i] == "-c" && i+1 < len(unwrapped) {
+			return firstToken(unwrapped[i+1])
+		}
+	}
+	return ""
+}
+
+func unwrapEnvPrefix(argv []string) []string {
+	if len(argv) == 0 || baseName(argv[0]) != "env" {
+		return argv
+	}
+	i := 1
+	for i < len(argv) {
+		switch {
+		case argv[i] == "--":
+			i++
+			return argv[i:]
+		case strings.HasPrefix(argv[i], "-"):
+			i++
+		case isEnvAssignment(argv[i]):
+			i++
+		default:
+			return argv[i:]
+		}
+	}
+	return nil
+}
+
+func isEnvAssignment(s string) bool {
+	eq := strings.IndexByte(s, '=')
+	return eq > 0
+}
+
+func isShellName(p string) bool {
 	switch baseName(p) {
-	case "sh", "bash", "dash", "ash", "zsh":
+	case "sh", "bash", "dash", "ash", "ksh", "zsh", "fish", "busybox":
 		return true
 	}
 	return false

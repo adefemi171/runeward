@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Runewardd/runeward/internal/profile"
 )
 
 func TestValidateSeedDir(t *testing.T) {
@@ -140,5 +142,69 @@ func TestFilterTarSafeRoundTrips(t *testing.T) {
 	body, _ := io.ReadAll(tr)
 	if strings.TrimSpace(string(body)) != "x" {
 		t.Fatalf("body = %q, want x", body)
+	}
+}
+
+func TestValidateStrictEgressUser(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    Spec
+		wantErr bool
+	}{
+		{
+			name: "strict egress with exempt uid fails",
+			spec: Spec{
+				User: "1337",
+				Network: profile.Network{
+					Default: "deny",
+					Enforce: "strict",
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "strict egress with exempt uid and gid fails",
+			spec: Spec{
+				User: "1337:1337",
+				Network: profile.Network{
+					Default: "deny",
+					Enforce: "strict",
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "strict egress with different uid passes",
+			spec: Spec{
+				User: "1000",
+				Network: profile.Network{
+					Default: "deny",
+					Enforce: "strict",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "cooperative egress permits exempt uid",
+			spec: Spec{
+				User: "1337",
+				Network: profile.Network{
+					Default: "deny",
+					Enforce: "",
+				},
+			},
+			wantErr: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateStrictEgressUser(tc.spec)
+			if tc.wantErr && err == nil {
+				t.Fatalf("validateStrictEgressUser() = nil, want error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validateStrictEgressUser() = %v, want nil", err)
+			}
+		})
 	}
 }

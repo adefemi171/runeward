@@ -8,8 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/Runewardd/runeward/internal/egress"
+	"github.com/Runewardd/runeward/internal/policybundle"
 	"github.com/pelletier/go-toml/v2"
 	"sigs.k8s.io/yaml"
 )
@@ -20,6 +23,9 @@ var ErrNotFound = errors.New("profile not found")
 // profileExts is in resolution order: within a directory the earliest
 // extension wins, so foo.toml shadows foo.yaml.
 var profileExts = []string{".toml", ".yaml", ".yml", ".json"}
+
+const requireSignedProfilesEnv = "RUNEWARD_REQUIRE_SIGNED_PROFILES"
+const profileVerifyKeyEnv = "RUNEWARD_PROFILE_VERIFY_KEY"
 
 // Options controls where profiles are resolved from.
 type Options struct {
@@ -116,6 +122,9 @@ func parseFile(path, name string) (*Profile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read profile %q: %w", path, err)
 	}
+	if err := verifyProfileSignature(path, data); err != nil {
+		return nil, err
+	}
 	var p Profile
 	switch filepath.Ext(path) {
 	case ".toml":
@@ -139,6 +148,48 @@ func parseFile(path, name string) (*Profile, error) {
 		return nil, fmt.Errorf("invalid profile %q: %w", path, err)
 	}
 	return &p, nil
+}
+
+func verifyProfileSignature(path string, content []byte) error {
+	if !signedProfileEnforcementEnabled() {
+		return nil
+	}
+
+	verifyKey := strings.TrimSpace(os.Getenv(profileVerifyKeyEnv))
+	if verifyKey == "" {
+		return fmt.Errorf("invalid profile %q: signed profile enforcement is enabled but %s is unset", path, profileVerifyKeyEnv)
+	}
+
+	val := verifyKey
+	if b, err := os.ReadFile(verifyKey); err == nil {
+		val = strings.TrimSpace(string(b))
+	}
+	pub, err := policybundle.DecodePublicKey(val)
+	if err != nil {
+		return fmt.Errorf("invalid profile %q: decode verify key from %s: %w", path, profileVerifyKeyEnv, err)
+	}
+
+	sigBytes, err := os.ReadFile(path + ".sig")
+	if err != nil {
+		return fmt.Errorf("invalid profile %q: required detached signature %q: %w", path, path+".sig", err)
+	}
+	sig, err := ParseSignature(sigBytes)
+	if err != nil {
+		return fmt.Errorf("invalid profile %q: parse detached signature: %w", path, err)
+	}
+	if _, err := sig.Verify(content, pub); err != nil {
+		return fmt.Errorf("invalid profile %q: verify detached signature: %w", path, err)
+	}
+	return nil
+}
+
+func signedProfileEnforcementEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(requireSignedProfilesEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func applyDefaults(p *Profile) {
@@ -173,6 +224,11 @@ func (p *Profile) Validate() error {
 	}
 	if d := p.Network.Default; d != "" && d != "allow" && d != "deny" {
 		return fmt.Errorf("network.default must be \"allow\" or \"deny\", got %q", d)
+	}
+	if p.Network.StrictEgress() {
+		if uid, ok := parseProfileUID(p.Host.User); ok && uid == egress.StrictProxyUID {
+			return fmt.Errorf("host.user uid %d is reserved for strict egress interception", egress.StrictProxyUID)
+		}
 	}
 	for i, e := range p.Env {
 		if e.Name == "" {
@@ -241,4 +297,27 @@ func (p *Profile) Validate() error {
 		return fmt.Errorf("fleet.replicas must be >= 0")
 	}
 	return nil
+}
+
+func parseProfileUID(user string) (int, bool) {
+	u := strings.TrimSpace(user)
+	if u == "" {
+		return 0, false
+	}
+	if i := strings.Index(u, ":"); i >= 0 {
+		u = u[:i]
+	}
+	if u == "" {
+		return 0, false
+	}
+	for _, r := range u {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	id, err := strconv.Atoi(u)
+	if err != nil {
+		return 0, false
+	}
+	return id, true
 }

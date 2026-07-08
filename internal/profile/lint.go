@@ -4,8 +4,12 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"github.com/Runewardd/runeward/internal/egress"
 )
 
 // Severity levels a [Finding] can carry.
@@ -60,6 +64,7 @@ func Lint(p *Profile) []Finding {
 		add(SeverityWarn, "host.copy_from", fmt.Sprintf("copy_from path %q does not exist", cf))
 	}
 
+	lintHostFootguns(p, add)
 	lintEnv(p, add)
 	lintNetwork(p, add)
 	lintPolicy(p, add)
@@ -100,6 +105,30 @@ func lintEnv(p *Profile, add func(sev, field, msg string)) {
 	}
 }
 
+func lintHostFootguns(p *Profile, add func(sev, field, msg string)) {
+	if p.Network.StrictEgress() {
+		if uid, ok := numericUID(p.Host.User); ok && uid == egress.StrictProxyUID {
+			add(SeverityError, "host.user",
+				fmt.Sprintf("host.user uid %d is reserved for strict egress interception; choose a different uid", egress.StrictProxyUID))
+		}
+	}
+
+	if !p.Host.ReadOnly && (p.Network.StrictEgress() || p.Host.RuntimeClass != "") {
+		add(SeverityWarn, "host.read_only",
+			"host.read_only is false while stricter isolation settings are enabled; writable rootfs increases tamper surface")
+	}
+
+	if !isRootUser(p.Host.User) {
+		return
+	}
+	for i, f := range p.Files {
+		if isBroadProjectionPath(f.Path) {
+			add(SeverityWarn, fmt.Sprintf("file[%d].path", i),
+				fmt.Sprintf("running as root with broad file projection target %q increases write blast radius", f.Path))
+		}
+	}
+}
+
 // lintNetwork flags egress policies that can't do anything useful: a deny
 // default with no allow rules (nothing can leave), and rules that a prior rule
 // already fully shadows (first-match-wins, so the later rule never fires).
@@ -114,8 +143,24 @@ func lintNetwork(p *Profile, add func(sev, field, msg string)) {
 			}
 		}
 		if allow == 0 {
-			add(SeverityWarn, "network.default",
-				"network.default is \"deny\" but there are no allow rules; nothing can egress")
+			if p.Network.StrictEgress() {
+				add(SeverityWarn, "network.enforce",
+					"strict egress is enabled but there are no allow rules; all outbound traffic is blocked")
+			} else {
+				add(SeverityWarn, "network.default",
+					"network.default is \"deny\" but there are no allow rules; nothing can egress")
+			}
+		}
+	}
+
+	// A hostname selector matches exactly one host (or one "*." wildcard); it is
+	// not a list. A comma or space means the author meant several hosts but got
+	// a single literal that can never match, silently blocking intended traffic.
+	for i, r := range rules {
+		h := strings.TrimSpace(r.Hostname)
+		if h != "" && strings.ContainsAny(h, ", \t") {
+			add(SeverityError, fmt.Sprintf("network.rule[%d].hostname", i),
+				fmt.Sprintf("hostname %q contains a comma or space; a rule matches exactly one host — use a separate [[network.rule]] per host (wildcards like *.example.com are allowed)", r.Hostname))
 		}
 	}
 
@@ -136,6 +181,10 @@ func lintNetwork(p *Profile, add func(sev, field, msg string)) {
 // catch-all rule for the same tool already decides.
 func lintPolicy(p *Profile, add func(sev, field, msg string)) {
 	rules := p.Policy
+	if len(rules) == 0 && (p.PolicyEngine == "" || p.PolicyEngine == "builtin") {
+		add(SeverityWarn, "policy",
+			"no [[policy]] rules configured; this relies on implicit allow-by-default behavior")
+	}
 	for i, r := range rules {
 		field := fmt.Sprintf("policy[%d]", i)
 		if !validVerdict(r.Verdict) {
@@ -283,4 +332,41 @@ func pathExists(path string) bool {
 	}
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func numericUID(user string) (int, bool) {
+	u := strings.TrimSpace(user)
+	if u == "" {
+		return 0, false
+	}
+	if i := strings.Index(u, ":"); i >= 0 {
+		u = u[:i]
+	}
+	if u == "" {
+		return 0, false
+	}
+	for _, r := range u {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	id, err := strconv.Atoi(u)
+	if err != nil {
+		return 0, false
+	}
+	return id, true
+}
+
+func isRootUser(user string) bool {
+	u := strings.ToLower(strings.TrimSpace(user))
+	if u == "" || u == "root" {
+		return true
+	}
+	uid, ok := numericUID(u)
+	return ok && uid == 0
+}
+
+func isBroadProjectionPath(pth string) bool {
+	clean := path.Clean(strings.TrimSpace(pth))
+	return path.IsAbs(clean)
 }

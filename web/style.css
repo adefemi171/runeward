@@ -766,6 +766,84 @@ body {
 }
 .requeue-box { accent-color: var(--accent); cursor: pointer; }
 
+/* ---------- Policy simulation ---------- */
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+.sim-results {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sim-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  background: var(--bg-input);
+}
+.sim-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.sim-trace {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+}
+
+/* ---------- Budget burn-down ---------- */
+.budget-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+}
+.budget-card {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  background: var(--bg-input);
+}
+.budget-label {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.budget-value {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  margin-bottom: 6px;
+}
+.budget-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+}
+.budget-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+/* ---------- Egress explorer ---------- */
+.verdict-cell {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.verdict-cell.allow { color: var(--green); }
+.verdict-cell.deny { color: var(--red); }
+
 /* ---------- Identity chip ---------- */
 .identity {
   display: inline-flex;

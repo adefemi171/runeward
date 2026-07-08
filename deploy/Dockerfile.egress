@@ -1,5 +1,5 @@
 # runeward egress proxy: init container (--setup-iptables) and sidecar.
-FROM --platform=$BUILDPLATFORM golang:1.25 AS build
+FROM --platform=$BUILDPLATFORM golang:1.25@sha256:f188e8c16ea47a8b22d2bdcf6d9bcd07b63ea7876c199749c07bf31e0ab33bad AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
@@ -10,10 +10,12 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/runeward-egress ./cmd/runeward-egress
 
 # debian-slim (not distroless) because strict L3 enforcement shells out to iptables.
-FROM debian:stable-slim
+FROM debian:stable-slim@sha256:ee12ffb55625b99d62837a72f037d9b2f18fd0c787a89c2b9a4f09666c48776c
 RUN apt-get update \
     && apt-get install -y --no-install-recommends iptables ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+RUN useradd -r -u 10001 -g root egress
 COPY --from=build /out/runeward-egress /usr/local/bin/runeward-egress
+USER 10001
 ENTRYPOINT ["/usr/local/bin/runeward-egress"]
 CMD ["--addr", ":8888", "--policy", "/etc/runeward/policy.json"]

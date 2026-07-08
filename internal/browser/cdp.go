@@ -3,6 +3,10 @@ package browser
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
+	"net/url"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +15,8 @@ import (
 
 // defaultCallTimeout bounds how long a CDP call waits for its response.
 const defaultCallTimeout = 30 * time.Second
+
+const envAllowPrivateNavigate = "RUNEWARD_BROWSER_ALLOW_PRIVATE_ADDRS"
 
 // Client is a minimal Chrome DevTools Protocol client for a single page-level
 // DevTools WebSocket. Calls are matched to responses by id; unsolicited events
@@ -236,6 +242,9 @@ func (c *Client) dispatchEvent(method string, params json.RawMessage) {
 // for Page.loadEventFired. A load-wait timeout is not fatal (the page is often
 // still usable), so Navigate returns nil in that case.
 func (c *Client) Navigate(url string, timeout time.Duration) error {
+	if err := ValidateNavigateURL(url); err != nil {
+		return err
+	}
 	if _, err := c.call("Page.enable", nil); err != nil {
 		return err
 	}
@@ -256,6 +265,67 @@ func (c *Client) Navigate(url string, timeout time.Duration) error {
 	case <-time.After(timeout):
 	}
 	return nil
+}
+
+// ValidateNavigateURL enforces safe browser navigation targets.
+func ValidateNavigateURL(rawURL string) error {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return fmt.Errorf("navigate: url is required")
+	}
+	if strings.EqualFold(rawURL, "about:blank") {
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("navigate: invalid url: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	switch scheme {
+	case "http", "https":
+	default:
+		return fmt.Errorf("navigate: url scheme %q is not allowed", scheme)
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return fmt.Errorf("navigate: url host is required")
+	}
+	if isPrivateHost(host) && !allowPrivateNavigate() {
+		return fmt.Errorf("navigate: target host %q is blocked", host)
+	}
+	return nil
+}
+
+func allowPrivateNavigate() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(envAllowPrivateNavigate)))
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPrivateHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	if addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() {
+		return true
+	}
+	// Explicitly keep 169.254.0.0/16 blocked for metadata endpoints.
+	if addr.Is4() {
+		a4 := addr.As4()
+		if a4[0] == 169 && a4[1] == 254 {
+			return true
+		}
+	}
+	return false
 }
 
 // Eval runs expr via Runtime.evaluate and returns the value as a string.

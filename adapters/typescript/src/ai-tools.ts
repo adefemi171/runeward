@@ -9,6 +9,11 @@
  * npm install ai zod
  * ```
  *
+ * The optional peers are imported through a `string`-typed specifier so this
+ * package type-checks and builds without them installed (and stays immune to
+ * AI-SDK type churn across major versions); the tool argument shapes are typed
+ * explicitly from the client instead of inferred from the framework.
+ *
  * Each tool converts governance verdicts into a short, model-readable string
  * (rather than throwing) so the model can reason about a denial or an approval
  * gate: a `deny` must not be retried blindly, and a `require-approval` is a hard
@@ -62,9 +67,11 @@ async function guarded<T>(fn: () => Promise<T>): Promise<string> {
  * ```
  */
 export async function makeRunewardTools(client: RunewardClient) {
-  // Dynamic imports keep `ai` and `zod` as optional peers.
-  const { tool } = await import("ai");
-  const { z } = await import("zod");
+  // Dynamic imports keep `ai` and `zod` as optional peers. The `as string`
+  // specifier makes these fully dynamic so tsc does not require the packages
+  // to be installed to build this file.
+  const { tool } = await import("ai" as string);
+  const { z } = await import("zod" as string);
 
   return {
     runeward_create_sandbox: tool({
@@ -73,7 +80,8 @@ export async function makeRunewardTools(client: RunewardClient) {
       parameters: z.object({
         profile: z.string().describe("Profile name, e.g. 'dev' or 'governed'."),
       }),
-      execute: ({ profile }) => guarded(() => client.createSandbox(profile)),
+      execute: ({ profile }: { profile: string }) =>
+        guarded(() => client.createSandbox(profile)),
     }),
 
     runeward_shell: tool({
@@ -84,7 +92,7 @@ export async function makeRunewardTools(client: RunewardClient) {
         command: z.array(z.string()).describe("argv array, e.g. ['ls','-la']."),
         workdir: z.string().optional().describe("Optional working directory."),
       }),
-      execute: ({ sandbox, command, workdir }) =>
+      execute: ({ sandbox, command, workdir }: { sandbox: string; command: string[]; workdir?: string }) =>
         guarded(() => client.shell(sandbox, command, workdir ?? "")),
     }),
 
@@ -94,7 +102,8 @@ export async function makeRunewardTools(client: RunewardClient) {
         sandbox: z.string(),
         code: z.string().describe("Python source to execute."),
       }),
-      execute: ({ sandbox, code }) => guarded(() => client.python(sandbox, code)),
+      execute: ({ sandbox, code }: { sandbox: string; code: string }) =>
+        guarded(() => client.python(sandbox, code)),
     }),
 
     runeward_node: tool({
@@ -103,7 +112,8 @@ export async function makeRunewardTools(client: RunewardClient) {
         sandbox: z.string(),
         code: z.string().describe("JavaScript source to execute."),
       }),
-      execute: ({ sandbox, code }) => guarded(() => client.node(sandbox, code)),
+      execute: ({ sandbox, code }: { sandbox: string; code: string }) =>
+        guarded(() => client.node(sandbox, code)),
     }),
 
     runeward_read_file: tool({
@@ -112,7 +122,8 @@ export async function makeRunewardTools(client: RunewardClient) {
         sandbox: z.string(),
         path: z.string().describe("File path to read."),
       }),
-      execute: ({ sandbox, path }) => guarded(() => client.readFile(sandbox, path)),
+      execute: ({ sandbox, path }: { sandbox: string; path: string }) =>
+        guarded(() => client.readFile(sandbox, path)),
     }),
 
     runeward_write_file: tool({
@@ -122,7 +133,7 @@ export async function makeRunewardTools(client: RunewardClient) {
         path: z.string().describe("File path to write."),
         content: z.string().describe("Content to write."),
       }),
-      execute: ({ sandbox, path, content }) =>
+      execute: ({ sandbox, path, content }: { sandbox: string; path: string; content: string }) =>
         guarded(async () => `wrote ${await client.writeFile(sandbox, path, content)} bytes to ${path}`),
     }),
 
@@ -132,7 +143,8 @@ export async function makeRunewardTools(client: RunewardClient) {
         sandbox: z.string(),
         path: z.string().describe("Directory path to list."),
       }),
-      execute: ({ sandbox, path }) => guarded(() => client.listFiles(sandbox, path)),
+      execute: ({ sandbox, path }: { sandbox: string; path: string }) =>
+        guarded(() => client.listFiles(sandbox, path)),
     }),
 
     runeward_search_files: tool({
@@ -142,7 +154,8 @@ export async function makeRunewardTools(client: RunewardClient) {
         query: z.string().describe("Search query."),
         path: z.string().describe("Path to search under."),
       }),
-      execute: ({ sandbox, query, path }) => guarded(() => client.searchFiles(sandbox, query, path)),
+      execute: ({ sandbox, query, path }: { sandbox: string; query: string; path: string }) =>
+        guarded(() => client.searchFiles(sandbox, query, path)),
     }),
 
     runeward_list_approvals: tool({
@@ -156,7 +169,7 @@ export async function makeRunewardTools(client: RunewardClient) {
       parameters: z.object({
         sandbox: z.string(),
       }),
-      execute: ({ sandbox }) =>
+      execute: ({ sandbox }: { sandbox: string }) =>
         guarded(async () => {
           await client.killSandbox(sandbox);
           return `sandbox ${sandbox} terminated`;

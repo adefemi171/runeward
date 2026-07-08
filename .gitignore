@@ -51,3 +51,20 @@ fleets.json
 *.swp
 
 ROADMAP.md
+
+# Node (TypeScript adapter) — installed deps + build output
+/adapters/typescript/node_modules/
+/adapters/typescript/dist/
+
+# Scratch screenshots produced by the browser E2E walkthrough
+/session-shot.png
+/shot.png
+
+# Signed-profile artifacts produced by `profile sign` during testing
+*.toml.sig
+
+# Scratch profiles generated inline by the E2E walkthrough (see docs §33)
+/examples/budget-demo.toml
+/examples/limits-demo.toml
+/examples/loop-demo.toml
+/examples/secret-env.toml

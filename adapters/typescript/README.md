@@ -49,6 +49,8 @@ console.log(run.stdout); // "4\n"
 await rw.killSandbox(sbx.id); // always tear down when done
 ```
 
+Use `allowInsecure: true` (or `RUNEWARD_ALLOW_INSECURE_HTTP=1`) only when you must call a non-loopback `http://` control-plane endpoint.
+
 ### Handling governance verdicts
 
 The two governance outcomes are thrown as typed errors. A denial must **not** be

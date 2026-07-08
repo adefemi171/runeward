@@ -6,7 +6,10 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+
+	"github.com/Runewardd/runeward/internal/egress"
 )
 
 // copyFromRootsEnv names an optional colon-separated allowlist of directory
@@ -105,4 +108,44 @@ func confineFilesEnabled() bool {
 		return true
 	}
 	return false
+}
+
+// validateStrictEgressUser rejects sandbox users that collide with the strict
+// egress proxy uid. iptables exempts that uid to avoid proxy self-redirection,
+// so allowing the sandbox to run as it would bypass strict interception.
+func validateStrictEgressUser(spec Spec) error {
+	if !spec.Network.StrictEgress() {
+		return nil
+	}
+	uid, ok := numericUID(spec.User)
+	if !ok {
+		return nil
+	}
+	if uid == egress.StrictProxyUID {
+		return fmt.Errorf("host.user uid %d is reserved for strict egress and cannot be used when network.enforce=strict", egress.StrictProxyUID)
+	}
+	return nil
+}
+
+func numericUID(user string) (int, bool) {
+	u := strings.TrimSpace(user)
+	if u == "" {
+		return 0, false
+	}
+	if i := strings.Index(u, ":"); i >= 0 {
+		u = u[:i]
+	}
+	if u == "" {
+		return 0, false
+	}
+	for _, r := range u {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	id, err := strconv.Atoi(u)
+	if err != nil {
+		return 0, false
+	}
+	return id, true
 }

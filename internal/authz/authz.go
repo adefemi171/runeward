@@ -8,6 +8,7 @@
 package authz
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -73,6 +74,7 @@ type Store struct {
 	mu         sync.RWMutex
 	byToken    map[string]*Principal
 	principals []*Principal
+	tokenHash  [][32]byte
 }
 
 type storeFile struct {
@@ -102,6 +104,7 @@ func newStore(principals []*Principal) (*Store, error) {
 	s := &Store{
 		byToken:    make(map[string]*Principal, len(principals)),
 		principals: make([]*Principal, 0, len(principals)),
+		tokenHash:  make([][32]byte, 0, len(principals)),
 	}
 	for i, p := range principals {
 		if p == nil {
@@ -118,6 +121,7 @@ func newStore(principals []*Principal) (*Store, error) {
 		}
 		s.byToken[p.Token] = p
 		s.principals = append(s.principals, p)
+		s.tokenHash = append(s.tokenHash, sha256.Sum256([]byte(p.Token)))
 	}
 	return s, nil
 }
@@ -142,15 +146,10 @@ func (s *Store) Identify(token string) (*Principal, bool) {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	// Fast path: direct map lookup.
-	if p, ok := s.byToken[token]; ok {
-		return p, true
-	}
-	// Constant-time fallback so a miss does not short-circuit faster than a
-	// near-hit. This keeps lookup timing roughly uniform across principals.
+	h := sha256.Sum256([]byte(token))
 	var match *Principal
-	for candidate, p := range s.byToken {
-		if subtle.ConstantTimeCompare([]byte(candidate), []byte(token)) == 1 {
+	for i, p := range s.principals {
+		if subtle.ConstantTimeCompare(s.tokenHash[i][:], h[:]) == 1 {
 			match = p
 		}
 	}

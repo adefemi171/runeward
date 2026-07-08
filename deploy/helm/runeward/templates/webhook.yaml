@@ -1,4 +1,5 @@
 {{- if .Values.webhook.enabled -}}
+{{- $webhookSA := default (default (printf "%s-webhook" (include "runeward.fullname" .)) .Values.serviceAccount.name) .Values.serviceAccount.webhook.name -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -23,7 +24,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      serviceAccountName: {{ include "runeward.serviceAccountName" . }}
+      serviceAccountName: {{ $webhookSA }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -119,7 +120,7 @@ roleRef:
   name: {{ include "runeward.fullname" . }}-webhook
 subjects:
   - kind: ServiceAccount
-    name: {{ include "runeward.serviceAccountName" . }}
+    name: {{ $webhookSA }}
     namespace: {{ .Release.Namespace }}
 ---
 # Namespaced access to persist/share the serving cert Secret (create once,
@@ -155,6 +156,6 @@ roleRef:
   name: {{ include "runeward.fullname" . }}-webhook-cert
 subjects:
   - kind: ServiceAccount
-    name: {{ include "runeward.serviceAccountName" . }}
+    name: {{ $webhookSA }}
     namespace: {{ .Release.Namespace }}
 {{- end }}

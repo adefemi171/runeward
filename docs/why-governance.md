@@ -121,6 +121,37 @@ guardrails), and the **verified transcript is the evidence** that every action
 was evaluated against it. If a record were altered or dropped, verification
 fails — silent tampering is not possible without breaking the chain.
 
+## Identity vs execution governance
+
+runeward answers one half of "can this agent do this?": **execution
+governance** — what an agent may do when it runs *inside your trust boundary*,
+enforced at the moment it acts, and recorded. The other half is **identity and
+authorization** — *who* an agent is and whether it may reach a given resource
+*across* organizational boundaries. That half belongs to identity systems and
+protocols: OAuth/OIDC for user login, SPIFFE/WIMSE for workload identity inside
+an enterprise, and emerging agent-identity efforts like
+[AAuth](https://github.com/dickhardt/AAuth) that give each agent its own
+key-bound, verifiable identity with no shared secrets.
+
+The two are complementary, not competing, because they enforce at different
+points:
+
+| | Identity / authorization (AAuth, SPIFFE, OAuth) | runeward (execution governance) |
+| --- | --- | --- |
+| Question | Who is this agent, and may it reach that resource? | What may it do when it executes here, and what happened? |
+| Where | At the edge, across trust domains | Inside the sandbox you control |
+| When | Before the request leaves | At tool-execution time — physically able to block |
+
+They compose well: an agent can carry a cryptographic identity for its outbound
+calls *while* runeward isolates, gates, and audits everything it executes
+locally — defense in depth (runeward's egress allowlist plus a key-bound caller
+identity). It also names an honest gap. runeward today authenticates its own API
+with bearer tokens and *injects* outbound secrets into the sandbox — exactly the
+copyable-secret model that key-bound agent identity is designed to replace.
+Adopting proof-of-possession identity for the API and for the sandbox's outbound
+calls is tracked in the
+[roadmap](https://github.com/Runewardd/runeward/blob/main/ROADMAP.md).
+
 ## Honest boundaries
 
 Governance is defense-in-depth, not magic. Being precise about the limits is

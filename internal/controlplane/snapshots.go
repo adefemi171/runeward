@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/Runewardd/runeward/internal/backend"
-	"github.com/Runewardd/runeward/internal/policy"
 	"github.com/Runewardd/runeward/internal/profile"
 )
 
@@ -52,19 +51,20 @@ func (m *Manager) RestoreSnapshot(ctx context.Context, snapshotID, owner string)
 	}
 
 	p, err := profile.Load(ref.Profile, profile.Options{ConfigDir: m.configDir})
-	// profileMissing fails closed: if the source profile is gone we can't
-	// re-derive its governance, so the restored sandbox denies every action
-	// rather than falling back to default-allow.
-	profileMissing := err != nil
-	if profileMissing {
-		p = &profile.Profile{Name: ref.Profile}
+	if err != nil {
+		return nil, fmt.Errorf("load snapshot profile %q: %w", ref.Profile, err)
 	}
+	env, secrets, err := resolveEnv(p)
+	if err != nil {
+		return nil, err
+	}
+	spec := backend.SpecFromProfile(p, env)
 
 	be, err := backend.For(p)
 	if err != nil {
 		return nil, err
 	}
-	sb, err := be.Restore(ctx, ref)
+	sb, err := backend.RestoreSnapshot(ctx, be, ref, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -75,15 +75,7 @@ func (m *Manager) RestoreSnapshot(ctx context.Context, snapshotID, owner string)
 		return nil, err
 	}
 
-	var engine policy.Evaluator
-	if profileMissing {
-		engine = policy.New(nil, profile.VerdictDeny)
-	} else if engine, err = newEngine(p); err != nil {
-		_ = be.Kill(context.Background(), sb.ID)
-		return nil, err
-	}
-
-	env, secrets, err := resolveEnv(p)
+	engine, err := newEngine(p)
 	if err != nil {
 		_ = be.Kill(context.Background(), sb.ID)
 		return nil, err

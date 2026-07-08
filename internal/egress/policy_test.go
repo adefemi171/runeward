@@ -114,6 +114,25 @@ func TestPolicyAllowAddrHostname(t *testing.T) {
 	}
 }
 
+func TestPolicyAllowListedHostname(t *testing.T) {
+	p := Policy{
+		Default: "allow",
+		Rules: []Rule{
+			{Verdict: "deny", Hostname: "blocked.example.com"},
+			{Verdict: "allow", Hostname: "*.example.com"},
+		},
+	}
+	if p.AllowListedHostname("unknown.test") {
+		t.Error("unlisted host should not be implicitly allowlisted")
+	}
+	if p.AllowListedHostname("blocked.example.com") {
+		t.Error("first matching deny should block allowlist match")
+	}
+	if !p.AllowListedHostname("api.example.com") {
+		t.Error("explicit allowlist match should pass")
+	}
+}
+
 func TestLoadPolicy(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "policy.json")

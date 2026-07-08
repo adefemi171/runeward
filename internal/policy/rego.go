@@ -45,16 +45,34 @@ func NewRego(module, query string, def profile.Verdict) (*RegoEngine, error) {
 	return &RegoEngine{pq: pq, def: def}, nil
 }
 
-// Evaluate runs the prepared query against {tool, arg}. On any failure
-// (undefined result, eval error, unrecognized verdict) it returns the default
-// verdict with a nil Rule.
-func (e *RegoEngine) Evaluate(a Action) Decision {
+// Evaluate runs the prepared query against {tool, arg}. Evaluation errors fail
+// closed to deny; undefined results and unrecognized verdicts return the
+// default verdict with a nil Rule.
+func (e *RegoEngine) Evaluate(a Action) (dec Decision) {
+	defer func() {
+		if r := recover(); r != nil {
+			reason := fmt.Sprintf("policy: rego evaluation panic: %v", r)
+			dec = Decision{
+				Verdict: profile.VerdictDeny,
+				Reason:  reason,
+				Rule:    &profile.PolicyRule{Tool: a.Tool, Match: a.Arg, Verdict: profile.VerdictDeny, Reason: reason},
+			}
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	input := map[string]any{"tool": a.Tool, "arg": a.Arg}
 	rs, err := e.pq.Eval(ctx, rego.EvalInput(input))
-	if err != nil || len(rs) == 0 || len(rs[0].Expressions) == 0 {
+	if err != nil {
+		reason := fmt.Sprintf("policy: rego evaluation error: %v", err)
+		return Decision{
+			Verdict: profile.VerdictDeny,
+			Reason:  reason,
+			Rule:    &profile.PolicyRule{Tool: a.Tool, Match: a.Arg, Verdict: profile.VerdictDeny, Reason: reason},
+		}
+	}
+	if len(rs) == 0 || len(rs[0].Expressions) == 0 {
 		return Decision{Verdict: e.def}
 	}
 

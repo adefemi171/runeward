@@ -69,8 +69,8 @@ match      = "*-rf*"
 verdict    = "require-approval"
 reason     = "recursive force delete must be reviewed"
 
-# Egress to production-looking hosts is refused. Deny rules are evaluated
-# before any allow rules, so add your real allowlist after this block.
+# Egress to production-looking hosts is refused. Egress rules are first-match,
+# so keep this deny rule before any allowlist entries you add later.
 [network]
 default = "deny"
 

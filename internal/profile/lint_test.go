@@ -235,3 +235,89 @@ func TestLintStableOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestLintStrictEgressRejectsExemptUID(t *testing.T) {
+	p := &Profile{
+		Host: Host{Image: "img", User: "1337"},
+		Network: Network{
+			Default: "deny",
+			Enforce: "strict",
+			Rules:   []NetworkRule{{Verdict: "allow", Hostname: "api.example.com"}},
+		},
+		Policy: []PolicyRule{{Tool: "shell", Match: "*", Verdict: VerdictAllow}},
+	}
+	if !hasFinding(Lint(p), SeverityError, "host.user") {
+		t.Fatalf("expected strict-egress exempt uid lint error on host.user")
+	}
+}
+
+func TestLintWarnsOnImplicitAllowPolicy(t *testing.T) {
+	p := &Profile{
+		Host: Host{Image: "img"},
+		Network: Network{
+			Default: "allow",
+		},
+	}
+	if !hasFinding(Lint(p), SeverityWarn, "policy") {
+		t.Fatalf("expected warning for implicit allow-by-default policy")
+	}
+}
+
+func TestLintWarnsOnRootBroadFileProjection(t *testing.T) {
+	p := &Profile{
+		Host: Host{Image: "img", User: "root"},
+		Files: []File{
+			{Path: "/etc/profile"},
+		},
+		Policy: []PolicyRule{{Tool: "shell", Match: "*", Verdict: VerdictAllow}},
+	}
+	if !hasFinding(Lint(p), SeverityWarn, "file[0].path") {
+		t.Fatalf("expected warning for broad file projection while running as root")
+	}
+}
+
+func TestLintWarnsOnStrictEgressWithoutAllowRules(t *testing.T) {
+	p := &Profile{
+		Host: Host{Image: "img"},
+		Network: Network{
+			Default: "deny",
+			Enforce: "strict",
+		},
+		Policy: []PolicyRule{{Tool: "shell", Match: "*", Verdict: VerdictAllow}},
+	}
+	if !hasFinding(Lint(p), SeverityWarn, "network.enforce") {
+		t.Fatalf("expected warning for strict egress with no allow rules")
+	}
+}
+
+func TestLintErrorsOnMultiHostHostname(t *testing.T) {
+	p := &Profile{
+		Host: Host{Image: "img"},
+		Network: Network{
+			Default: "deny",
+			Rules:   []NetworkRule{{Verdict: "allow", Hostname: "example.com, *.github.com"}},
+		},
+		Policy: []PolicyRule{{Tool: "shell", Match: "*", Verdict: VerdictAllow}},
+	}
+	if !hasFinding(Lint(p), SeverityError, "network.rule[0].hostname") {
+		t.Fatalf("expected error for comma-separated hostname; got %+v", Lint(p))
+	}
+}
+
+func TestLintWarnsWritableRootfsWithIsolationSettings(t *testing.T) {
+	p := &Profile{
+		Host: Host{
+			Image:    "img",
+			ReadOnly: false,
+		},
+		Network: Network{
+			Default: "deny",
+			Enforce: "strict",
+			Rules:   []NetworkRule{{Verdict: "allow", CIDR: "10.0.0.0/8"}},
+		},
+		Policy: []PolicyRule{{Tool: "shell", Match: "*", Verdict: VerdictAllow}},
+	}
+	if !hasFinding(Lint(p), SeverityWarn, "host.read_only") {
+		t.Fatalf("expected warning for writable rootfs with strict isolation settings")
+	}
+}

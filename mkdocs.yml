@@ -63,6 +63,7 @@ nav:
   - Quickstart: quickstart.md
   - Concepts: concepts.md
   - Profiles: profiles.md
+  - Bring your own model: byo-model.md
   - Fleets: fleets.md
   - CLI reference: cli.md
   - REST API: rest-api.md

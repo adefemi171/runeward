@@ -526,8 +526,9 @@ spec:
   requiredLabels: ["owner"]
 ```
 
-Enable it with the chart (`--set webhook.enabled=true`); the webhook admits by default (fail-open)
-and denies only resources that violate a policy.
+Enable it with the chart (`--set webhook.enabled=true`); the validating webhook is fail-closed
+(`failurePolicy: Fail`) and denies resources that violate policy. The mutating defaulting path is
+best-effort (`failurePolicy: Ignore`) for missing `spec.profile`.
 
 ## Policy engines
 

@@ -13,7 +13,7 @@ default = "deny"
 
 [[network.rule]]
 verdict  = "allow"
-hostname = "example.com, *.github.com"
+hostname = "example.com"
 
 [limits]
 max_execs = 100

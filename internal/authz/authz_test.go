@@ -136,6 +136,27 @@ func TestIdentify(t *testing.T) {
 	}
 }
 
+func TestIdentifyDoesNotDependOnByTokenMap(t *testing.T) {
+	p := writeFile(t, `{
+		"principals": [
+			{"name": "dev", "token": "secret-dev"},
+			{"name": "ops", "token": "secret-ops"}
+		]
+	}`)
+	s, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	s.byToken = nil
+	got, ok := s.Identify("secret-ops")
+	if !ok {
+		t.Fatalf("expected hit after byToken map removal")
+	}
+	if got.Name != "ops" {
+		t.Fatalf("Name = %q, want ops", got.Name)
+	}
+}
+
 func TestIdentifyNilStore(t *testing.T) {
 	var s *Store
 	if _, ok := s.Identify("anything"); ok {

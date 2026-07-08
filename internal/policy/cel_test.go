@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Runewardd/runeward/internal/profile"
@@ -44,6 +45,25 @@ func TestCELEngineCompileErrors(t *testing.T) {
 	}
 	if _, err := NewCEL([]profile.CELRule{{Expr: ""}}, ""); err == nil {
 		t.Fatal("expected error for empty expr")
+	}
+}
+
+func TestCELEngineRuntimeErrorFailsClosed(t *testing.T) {
+	eng, err := NewCEL([]profile.CELRule{
+		{Expr: `tool == "shell" && (1 / int(arg)) > 0`, Verdict: profile.VerdictAllow},
+	}, profile.VerdictAllow)
+	if err != nil {
+		t.Fatalf("NewCEL: %v", err)
+	}
+	dec := eng.Evaluate(Action{Tool: "shell", Arg: "0"})
+	if dec.Verdict != profile.VerdictDeny {
+		t.Fatalf("verdict = %q, want deny", dec.Verdict)
+	}
+	if !strings.Contains(dec.Reason, "cel rule 0 evaluation error") {
+		t.Fatalf("reason = %q, want cel evaluation error context", dec.Reason)
+	}
+	if dec.Rule == nil {
+		t.Fatalf("expected rule on fail-closed decision")
 	}
 }
 

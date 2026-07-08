@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Runewardd/runeward/internal/profile"
@@ -105,5 +106,19 @@ default decision := "bogus"
 	}
 	if dec := e.Evaluate(Action{Tool: "shell", Arg: "ls"}); dec.Rule != nil {
 		t.Errorf("expected nil Rule on default fallback")
+	}
+}
+
+func TestRegoEngineEvalErrorFailsClosed(t *testing.T) {
+	e := &RegoEngine{def: profile.VerdictAllow}
+	dec := e.Evaluate(Action{Tool: "shell", Arg: "0"})
+	if dec.Verdict != profile.VerdictDeny {
+		t.Fatalf("verdict = %q, want deny", dec.Verdict)
+	}
+	if !strings.Contains(dec.Reason, "rego evaluation") {
+		t.Fatalf("reason = %q, want rego evaluation failure context", dec.Reason)
+	}
+	if dec.Rule == nil {
+		t.Fatalf("expected synthesized Rule on fail-closed decision")
 	}
 }

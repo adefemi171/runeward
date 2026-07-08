@@ -1,0 +1,58 @@
+# Bring-your-own-model profile: route model calls to your own OpenAI-compatible
+# gateway (vLLM/Ollama/LiteLLM) while keeping deny-by-default egress and audit on.
+#
+#   OPENAI_BASE_URL=http://host.docker.internal:11434/v1 \
+#   OPENAI_API_KEY=dummy \
+#   runeward --config-dir examples serve
+#   POST /v1/sandboxes {"profile":"byo-model-gateway"}
+
+[host]
+type    = "container"
+image   = "runeward-agent:dev"
+user    = "agent"
+workdir = "/workspace"
+
+[network]
+default = "deny"
+enforce = "strict"
+
+# Allow only the model gateway hostname.
+# In strict mode, runeward resolves and pins this hostname to concrete IPs for
+# enforcement; recreate the sandbox to pick up DNS changes.
+[[network.rule]]
+verdict  = "allow"
+hostname = "host.docker.internal"
+
+[[policy]]
+tool    = "shell"
+match   = "rm -rf*"
+verdict = "deny"
+reason  = "destructive recursive delete blocked by policy"
+
+[[policy]]
+tool    = "file.write"
+match   = "/etc/*"
+verdict = "require-approval"
+reason  = "writes outside the workspace must be reviewed"
+
+[limits]
+wall_clock      = "45m"
+max_execs       = 600
+egress_requests = 1200
+loop_window     = "60s"
+loop_threshold  = 12
+
+[[env]]
+name = "OPENAI_BASE_URL"
+op   = "env://OPENAI_BASE_URL"
+
+[[env]]
+name = "OPENAI_API_KEY"
+op   = "env://OPENAI_API_KEY"
+
+[[env]]
+name  = "NODE_USE_ENV_PROXY"
+value = "1"
+
+[audit]
+redact = true

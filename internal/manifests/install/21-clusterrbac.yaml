@@ -12,6 +12,11 @@ rules:
   - apiGroups: ["runeward.dev"]
     resources: ["clustersandboxes/status", "clusterfleets/status"]
     verbs: ["get", "update", "patch"]
+  # The k8s backend calls ensureNamespace (get + best-effort PSA-label patch,
+  # and create when provisioning into a namespace that does not yet exist).
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

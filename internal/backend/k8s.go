@@ -419,7 +419,11 @@ func (k *K8s) seedWorkspace(ctx context.Context, id, workdir, srcDir string) err
 		return err
 	}
 	pr, pw := io.Pipe()
-	go func() { pw.CloseWithError(writeDirTar(pw, srcDir)) }()
+	go func() {
+		rawPr, rawPw := io.Pipe()
+		go func() { rawPw.CloseWithError(writeDirTar(rawPw, srcDir)) }()
+		pw.CloseWithError(filterTarSafe(pw, rawPr))
+	}()
 
 	var stderr bytes.Buffer
 	err := k.stream(ctx, containerName(id), corev1.PodExecOptions{
@@ -494,7 +498,14 @@ func (k *K8s) Snapshot(ctx context.Context, id, name string) (*SnapshotRef, erro
 }
 
 func (k *K8s) Restore(ctx context.Context, ref SnapshotRef) (*Sandbox, error) {
-	sb, err := k.Create(ctx, Spec{Profile: ref.Profile})
+	return k.RestoreWithSpec(ctx, ref, Spec{Profile: ref.Profile})
+}
+
+func (k *K8s) RestoreWithSpec(ctx context.Context, ref SnapshotRef, spec Spec) (*Sandbox, error) {
+	if spec.Profile == "" {
+		spec.Profile = ref.Profile
+	}
+	sb, err := k.Create(ctx, spec)
 	if err != nil {
 		return nil, err
 	}

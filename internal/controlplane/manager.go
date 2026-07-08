@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -85,9 +87,18 @@ type Session struct {
 	// secrets are resolved secret env values, kept so they can be redacted
 	// from ledger payloads.
 	secrets []string
+	// scrubber applies built-in and profile-specific audit scrub patterns.
+	scrubber *ledger.Scrubber
 
 	browserMu sync.Mutex
 	browsers  map[string]*browserSession // live CDP sessions, keyed by session id
+}
+
+func (s *Session) eventScrubber() *ledger.Scrubber {
+	if s != nil && s.scrubber != nil {
+		return s.scrubber
+	}
+	return ledger.NewScrubber()
 }
 
 // New constructs a Manager and opens the shared audit ledger.
@@ -277,7 +288,7 @@ func (m *Manager) ResolveApproval(id string, approve bool, actor string) bool {
 	if sess != nil {
 		ev.Profile = sess.Profile.Name
 		if sess.Profile.Audit.RedactEnabled() {
-			ev = ledger.Scrub(ev, sess.secrets...)
+			ev = sess.eventScrubber().Scrub(ev, sess.secrets...)
 		}
 	} else {
 		ev = ledger.Scrub(ev)
@@ -334,6 +345,10 @@ func (m *Manager) CreateSandbox(ctx context.Context, profileName string, opts Cr
 	if err != nil {
 		return nil, err
 	}
+	extraScrubPatterns, err := compileAuditScrubPatterns(p.Audit.ScrubPatterns)
+	if err != nil {
+		return nil, err
+	}
 
 	env, secrets, err := resolveEnv(p)
 	if err != nil {
@@ -366,15 +381,16 @@ func (m *Manager) CreateSandbox(ctx context.Context, profileName string, opts Cr
 	}
 
 	sess := &Session{
-		Sandbox: sb,
-		Backend: be,
-		Profile: p,
-		Engine:  engine,
-		Guard:   guard,
-		Env:     env,
-		Workdir: p.Host.Workdir,
-		Owner:   opts.Owner,
-		secrets: secrets,
+		Sandbox:  sb,
+		Backend:  be,
+		Profile:  p,
+		Engine:   engine,
+		Guard:    guard,
+		Env:      env,
+		Workdir:  p.Host.Workdir,
+		Owner:    opts.Owner,
+		secrets:  secrets,
+		scrubber: ledger.NewScrubber(extraScrubPatterns...),
 	}
 
 	m.mu.Lock()
@@ -447,7 +463,7 @@ func (m *Manager) KillSandbox(ctx context.Context, id string) error {
 	}
 	m.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("sandbox %q not found", id)
+		return notFoundError("sandbox %q not found", id)
 	}
 	if m.accounting != nil {
 		m.accounting.Forget(id)
@@ -469,8 +485,23 @@ func (m *Manager) RecordUsage(id string, tokens int64, costUSD float64) error {
 	if m.accounting == nil {
 		return fmt.Errorf("usage accounting is not initialized")
 	}
-	m.accounting.Record(sess.Profile.Name, id, tokens, costUSD)
+
+	if tokens < 0 || costUSD < 0 {
+		return fmt.Errorf("usage deltas must be non-negative")
+	}
+	if math.IsNaN(costUSD) || math.IsInf(costUSD, 0) {
+		return fmt.Errorf("cost_usd must be finite")
+	}
+	if tokens > maxClientUsageTokenDelta || costUSD > maxClientUsageCostDelta {
+		return nil
+	}
 	u := m.accounting.Usage(id)
+	if tokens > math.MaxInt64-u.Tokens || costUSD > math.MaxFloat64-u.CostUSD {
+		return nil
+	}
+
+	m.accounting.Record(sess.Profile.Name, id, tokens, costUSD)
+	u = m.accounting.Usage(id)
 	ev := ledger.Event{
 		SessionID: id,
 		Sandbox:   id,
@@ -523,7 +554,7 @@ func (m *Manager) session(id string) (*Session, error) {
 	defer m.mu.Unlock()
 	s, ok := m.sessions[id]
 	if !ok {
-		return nil, fmt.Errorf("sandbox %q not found", id)
+		return nil, notFoundError("sandbox %q not found", id)
 	}
 	return s, nil
 }
@@ -531,6 +562,15 @@ func (m *Manager) session(id string) (*Session, error) {
 // govern runs one action through the governed path. run is only invoked once
 // the action is authorized and within guardrails.
 func (m *Manager) govern(ctx context.Context, sess *Session, tool, arg string, args []string, run func(context.Context) (*backend.ExecResult, error)) (*ToolResult, error) {
+	return m.governOut(ctx, sess, tool, arg, args, false, run)
+}
+
+// governOut is govern with control over stdout scrubbing. When rawStdout is
+// true the text secret-scrubber is skipped for stdout (stderr is still
+// scrubbed): callers use this for binary artifacts like browser screenshots,
+// whose base64 would otherwise be masked wholesale by the high-entropy blob
+// detector, destroying the image.
+func (m *Manager) governOut(ctx context.Context, sess *Session, tool, arg string, args []string, rawStdout bool, run func(context.Context) (*backend.ExecResult, error)) (*ToolResult, error) {
 	dec := sess.Engine.Evaluate(policy.Action{Tool: tool, Arg: arg, Args: args})
 
 	switch dec.Verdict {
@@ -570,7 +610,7 @@ func (m *Manager) govern(ctx context.Context, sess *Session, tool, arg string, a
 
 	// Enforce the spend/token budget: once a sandbox's reported usage exceeds
 	// the profile's limits, further tool calls are denied fail-closed.
-	if m.accounting != nil {
+	if m.accounting != nil && !ignoreClientUsageBudget() {
 		if over, why := m.accounting.Over(sess.Sandbox.ID, sess.Profile.Limits.MaxTokens, sess.Profile.Limits.MaxCostUSD); over {
 			m.record(sess, tool, arg, args, string(profile.VerdictDeny), -1, 0, why)
 			return &ToolResult{Verdict: profile.VerdictDeny, Reason: why}, nil
@@ -599,8 +639,10 @@ func (m *Manager) govern(ctx context.Context, sess *Session, tool, arg string, a
 	// credential in stdout/stderr doesn't reach the API/MCP client in cleartext.
 	stdout, stderr := res.Stdout, res.Stderr
 	if sess.Profile.Audit.RedactEnabled() {
-		stdout = ledger.ScrubString(stdout, sess.secrets...)
-		stderr = ledger.ScrubString(stderr, sess.secrets...)
+		if !rawStdout {
+			stdout = sess.eventScrubber().ScrubString(stdout, sess.secrets...)
+		}
+		stderr = sess.eventScrubber().ScrubString(stderr, sess.secrets...)
 	}
 
 	return &ToolResult{
@@ -639,7 +681,7 @@ func (m *Manager) record(sess *Session, tool, action string, args []string, verd
 	// (masked) from the payload. Unlike a whole-payload hash, this keeps the
 	// trail readable while catching secrets pasted into a command or snippet.
 	if sess.Profile.Audit.RedactEnabled() {
-		ev = ledger.Scrub(ev, sess.secrets...)
+		ev = sess.eventScrubber().Scrub(ev, sess.secrets...)
 	}
 	m.appendAudit(ev)
 }
@@ -714,6 +756,7 @@ func expandHome(p string) string {
 // newEngine builds the policy engine for a profile: Rego or CEL when requested,
 // otherwise the built-in first-match glob engine.
 func newEngine(p *profile.Profile) (policy.Evaluator, error) {
+	noMatch := noMatchPolicyVerdict(p)
 	switch {
 	case p.UsesPolicyBundle():
 		return newBundleEngine(p)
@@ -726,11 +769,11 @@ func newEngine(p *profile.Profile) (policy.Evaluator, error) {
 			}
 			module = string(b)
 		}
-		return policy.NewRego(module, p.Rego.Query, profile.VerdictAllow)
+		return policy.NewRego(module, p.Rego.Query, noMatch)
 	case p.UsesCEL():
-		return policy.NewCEL(p.CEL, profile.VerdictAllow)
+		return policy.NewCEL(p.CEL, noMatch)
 	default:
-		return policy.New(p.Policy, profile.VerdictAllow), nil
+		return policy.New(p.Policy, noMatch), nil
 	}
 }
 
@@ -740,6 +783,7 @@ const bundlePullTimeout = 30 * time.Second
 // from it. With a verify key configured, the bundle's ed25519 signature is
 // required before its policy is trusted.
 func newBundleEngine(p *profile.Profile) (policy.Evaluator, error) {
+	noMatch := noMatchPolicyVerdict(p)
 	pb := p.PolicyBundle
 	var verify ed25519.PublicKey
 	switch {
@@ -768,7 +812,7 @@ func newBundleEngine(p *profile.Profile) (policy.Evaluator, error) {
 
 	switch b.Engine {
 	case policybundle.EngineRego:
-		return policy.NewRego(string(b.Policy), b.Query, profile.VerdictAllow)
+		return policy.NewRego(string(b.Policy), b.Query, noMatch)
 	case policybundle.EngineCEL:
 		var frag struct {
 			CEL []profile.CELRule `toml:"cel"`
@@ -776,9 +820,57 @@ func newBundleEngine(p *profile.Profile) (policy.Evaluator, error) {
 		if err := toml.Unmarshal(b.Policy, &frag); err != nil {
 			return nil, fmt.Errorf("policy bundle %q: parse cel fragment: %w", pb.Ref, err)
 		}
-		return policy.NewCEL(frag.CEL, profile.VerdictAllow)
+		return policy.NewCEL(frag.CEL, noMatch)
 	default:
 		return nil, fmt.Errorf("policy bundle %q: unknown engine %q", pb.Ref, b.Engine)
+	}
+}
+
+func noMatchPolicyVerdict(p *profile.Profile) profile.Verdict {
+	if p != nil {
+		switch strings.ToLower(strings.TrimSpace(string(p.PolicyDefault))) {
+		case string(profile.VerdictDeny):
+			return profile.VerdictDeny
+		case string(profile.VerdictAllow):
+			return profile.VerdictAllow
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("RUNEWARD_POLICY_DEFAULT"))) {
+	case string(profile.VerdictDeny):
+		return profile.VerdictDeny
+	case string(profile.VerdictAllow):
+		return profile.VerdictAllow
+	}
+	return profile.VerdictAllow
+}
+
+func compileAuditScrubPatterns(patterns []string) ([]*regexp.Regexp, error) {
+	compiled := make([]*regexp.Regexp, 0, len(patterns))
+	for _, raw := range patterns {
+		pat := strings.TrimSpace(raw)
+		if pat == "" {
+			continue
+		}
+		re, err := regexp.Compile(pat)
+		if err != nil {
+			return nil, fmt.Errorf("audit.scrub_patterns %q: %w", pat, err)
+		}
+		compiled = append(compiled, re)
+	}
+	return compiled, nil
+}
+
+const (
+	maxClientUsageTokenDelta int64   = 1_000_000_000
+	maxClientUsageCostDelta  float64 = 1_000_000
+)
+
+func ignoreClientUsageBudget() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("RUNEWARD_IGNORE_CLIENT_USAGE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 

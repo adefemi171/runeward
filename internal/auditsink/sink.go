@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/Runewardd/runeward/internal/ledger"
@@ -72,6 +73,16 @@ const (
 	EnvWebhookHeader = "RUNEWARD_AUDIT_WEBHOOK_HEADER"
 	// EnvFile, when set, appends each event as one JSON line to the file.
 	EnvFile = "RUNEWARD_AUDIT_FILE"
+	// EnvOTLPEndpoint, when set, exports each event as an OTLP log record.
+	EnvOTLPEndpoint = "RUNEWARD_AUDIT_OTLP_ENDPOINT"
+	// EnvOTLPHeaders optionally sets OTLP headers as "k=v,k2=v2".
+	EnvOTLPHeaders = "RUNEWARD_AUDIT_OTLP_HEADERS"
+	// EnvOTLPInsecure toggles insecure OTLP transport when true.
+	EnvOTLPInsecure = "RUNEWARD_AUDIT_OTLP_INSECURE"
+	// EnvOTLPServiceName sets resource attribute "service.name".
+	EnvOTLPServiceName = "RUNEWARD_AUDIT_OTLP_SERVICE_NAME"
+	// EnvOTLPResourceAttrs sets resource attrs as "k=v,k2=v2".
+	EnvOTLPResourceAttrs = "RUNEWARD_AUDIT_OTLP_RESOURCE_ATTRS"
 )
 
 // FromEnv builds a Sink from environment variables. With no relevant
@@ -124,6 +135,48 @@ func FromEnv(logger *slog.Logger) (Sink, error) {
 			return nil, fmt.Errorf("auditsink: %s: %w", EnvFile, err)
 		}
 		sinks = append(sinks, fs)
+	}
+
+	if endpoint := strings.TrimSpace(os.Getenv(EnvOTLPEndpoint)); endpoint != "" {
+		var headers map[string]string
+		if raw := strings.TrimSpace(os.Getenv(EnvOTLPHeaders)); raw != "" {
+			parsed, err := parseKVList(raw)
+			if err != nil {
+				return nil, fmt.Errorf("auditsink: invalid %s: %w", EnvOTLPHeaders, err)
+			}
+			headers = parsed
+		}
+
+		insecure := false
+		if raw := strings.TrimSpace(os.Getenv(EnvOTLPInsecure)); raw != "" {
+			parsed, err := strconv.ParseBool(raw)
+			if err != nil {
+				return nil, fmt.Errorf("auditsink: invalid %s: %w", EnvOTLPInsecure, err)
+			}
+			insecure = parsed
+		}
+
+		var resourceAttrs map[string]string
+		if raw := strings.TrimSpace(os.Getenv(EnvOTLPResourceAttrs)); raw != "" {
+			parsed, err := parseKVList(raw)
+			if err != nil {
+				return nil, fmt.Errorf("auditsink: invalid %s: %w", EnvOTLPResourceAttrs, err)
+			}
+			resourceAttrs = parsed
+		}
+
+		osink, err := NewOTLPSink(OTLPSinkConfig{
+			Endpoint:           endpoint,
+			Headers:            headers,
+			Insecure:           insecure,
+			ServiceName:        strings.TrimSpace(os.Getenv(EnvOTLPServiceName)),
+			ResourceAttributes: resourceAttrs,
+			Logger:             logger,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("auditsink: %s: %w", EnvOTLPEndpoint, err)
+		}
+		sinks = append(sinks, osink)
 	}
 
 	return NewMulti(sinks...), nil

@@ -4,7 +4,7 @@
 #   runeward --config-dir examples serve
 #   POST /v1/sandboxes {"profile":"governed"}
 #
-# Then try a denied command (rm ...) and an approval-gated write (/etc/...).
+# Then try a denied command (rm ...) and an approval-gated write (config/...).
 
 [host]
 type    = "container"
@@ -18,12 +18,15 @@ match   = "rm *"
 verdict = "deny"
 reason  = "destructive command blocked by policy"
 
-# Writes anywhere under /etc require a human to approve them.
+# Writes to protected config files under the workspace require a human to
+# approve them. File tools are workspace-confined, so the match targets a
+# relative path inside the workspace (an absolute path like /etc/* would be
+# rejected before policy ever runs).
 [[policy]]
 tool    = "file.write"
-match   = "/etc/*"
+match   = "config/*"
 verdict = "require-approval"
-reason  = "writes under /etc must be reviewed by an operator"
+reason  = "writes under config/ must be reviewed by an operator"
 
 [limits]
 wall_clock = "30m"

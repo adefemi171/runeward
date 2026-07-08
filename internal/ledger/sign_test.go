@@ -70,3 +70,45 @@ func TestExportAndVerifyBundle(t *testing.T) {
 		t.Fatal("VerifyBundle should fail on tampered payload")
 	}
 }
+
+func TestVerifySignaturesRequiresAllWhenKeyProvided(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ledger.jsonl")
+
+	l, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := l.Append(Event{Tool: "shell", Action: "echo", Verdict: "allow"}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	signer, err := LoadOrCreateSigner(t.TempDir())
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	if err := l.VerifySignatures(signer.Public(), false); err == nil {
+		t.Fatal("expected missing signature failure when verifier key is provided")
+	}
+}
+
+func TestVerifySignaturesAllowsUnsignedWithoutKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ledger.jsonl")
+
+	l, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := l.Append(Event{Tool: "shell", Action: "echo", Verdict: "allow"}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	if err := l.VerifySignatures(nil, false); err != nil {
+		t.Fatalf("unsigned ledger should verify without key: %v", err)
+	}
+}

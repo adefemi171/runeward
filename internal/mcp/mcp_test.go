@@ -2,10 +2,14 @@ package mcp
 
 import (
 	"context"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Runewardd/runeward/internal/authz"
 	"github.com/Runewardd/runeward/internal/controlplane"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -83,5 +87,54 @@ func TestCallListApprovals(t *testing.T) {
 	}
 	if !strings.Contains(text, "no pending approvals") {
 		t.Fatalf("unexpected content: %q", text)
+	}
+}
+
+func TestParseBearerToken(t *testing.T) {
+	tok, ok := parseBearerToken("Bearer abc123")
+	if !ok || tok != "abc123" {
+		t.Fatalf("parseBearerToken failed: tok=%q ok=%v", tok, ok)
+	}
+	if _, ok := parseBearerToken("Token nope"); ok {
+		t.Fatal("expected non-bearer header to fail")
+	}
+}
+
+func TestPrincipalResolverUsesAuthzForHTTP(t *testing.T) {
+	dir := t.TempDir()
+	authzFile := filepath.Join(dir, "authz.json")
+	if err := os.WriteFile(authzFile, []byte(`{
+  "principals": [
+    {"name":"stdio-owner","token":"tok-stdio","allowed_profiles":["dev-*"]},
+    {"name":"http-owner","token":"tok-http","allowed_profiles":["prod-*"]}
+  ]
+}`), 0o600); err != nil {
+		t.Fatalf("write authz file: %v", err)
+	}
+
+	t.Setenv(authz.EnvFile, authzFile)
+	t.Setenv(EnvMCPDefaultToken, "tok-stdio")
+	t.Setenv(EnvMCPDefaultPrincipal, "")
+
+	r, err := newPrincipalResolver()
+	if err != nil {
+		t.Fatalf("newPrincipalResolver: %v", err)
+	}
+	stdio, err := r.resolve(nil)
+	if err != nil {
+		t.Fatalf("resolve stdio: %v", err)
+	}
+	if stdio.Owner != "stdio-owner" {
+		t.Fatalf("stdio owner = %q, want %q", stdio.Owner, "stdio-owner")
+	}
+	req := &sdk.CallToolRequest{
+		Extra: &sdk.RequestExtra{Header: http.Header{"Authorization": []string{"Bearer tok-http"}}},
+	}
+	httpPrincipal, err := r.resolve(req)
+	if err != nil {
+		t.Fatalf("resolve http principal: %v", err)
+	}
+	if httpPrincipal.Owner != "http-owner" {
+		t.Fatalf("http owner = %q, want %q", httpPrincipal.Owner, "http-owner")
 	}
 }

@@ -12,8 +12,8 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7.0.0
+      - uses: actions/setup-go@v6.5.0
         with:
           go-version: "1.25"
           cache: true
@@ -40,8 +40,8 @@ jobs:
   helm-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: azure/setup-helm@v5
+      - uses: actions/checkout@v7.0.0
+      - uses: azure/setup-helm@v5.0.1
         with:
           version: v3.16.2
       - name: helm lint

@@ -3,10 +3,32 @@ package backend
 import (
 	"archive/tar"
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestFilterTarSafeRejectsUnsafeSeedSymlink(t *testing.T) {
+	src := t.TempDir()
+	if err := os.Symlink("../../etc/passwd", filepath.Join(src, "escape")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	rawBuf := new(bytes.Buffer)
+	if err := writeDirTar(rawBuf, src); err != nil {
+		t.Fatalf("writeDirTar: %v", err)
+	}
+
+	err := filterTarSafe(io.Discard, bytes.NewReader(rawBuf.Bytes()))
+	if err == nil {
+		t.Fatalf("expected unsafe seed archive to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unsafe archive entry") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
 
 // tarball builds an in-memory tar from a list of entries.
 func tarball(t *testing.T, hdrs []*tar.Header, bodies []string) []byte {

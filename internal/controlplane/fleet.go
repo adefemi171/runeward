@@ -13,6 +13,7 @@ import (
 type Fleet struct {
 	ID        string
 	Profile   string
+	Owner     string
 	Board     *fleet.Board
 	Sandboxes []string
 	Created   time.Time
@@ -25,6 +26,7 @@ type Fleet struct {
 type FleetView struct {
 	ID        string      `json:"id"`
 	Profile   string      `json:"profile"`
+	Owner     string      `json:"owner,omitempty"`
 	Sandboxes []string    `json:"sandboxes"`
 	Stats     fleet.Stats `json:"stats"`
 	Created   time.Time   `json:"created"`
@@ -34,6 +36,7 @@ func (f *Fleet) view() FleetView {
 	return FleetView{
 		ID:        f.ID,
 		Profile:   f.Profile,
+		Owner:     f.Owner,
 		Sandboxes: f.Sandboxes,
 		Stats:     f.Board.Stats(),
 		Created:   f.Created,
@@ -43,6 +46,13 @@ func (f *Fleet) view() FleetView {
 // CreateFleet provisions the profile's replicas with a shared task board seeded
 // from its task_board list.
 func (m *Manager) CreateFleet(ctx context.Context, profileName string) (*FleetView, error) {
+	return m.CreateFleetForOwner(ctx, profileName, "")
+}
+
+// CreateFleetForOwner provisions the profile's replicas with a shared task
+// board seeded from its task_board list and attributes member sandboxes to the
+// owning principal when provided.
+func (m *Manager) CreateFleetForOwner(ctx context.Context, profileName, owner string) (*FleetView, error) {
 	p, err := profile.Load(profileName, profile.Options{ConfigDir: m.configDir})
 	if err != nil {
 		return nil, err
@@ -61,12 +71,13 @@ func (m *Manager) CreateFleet(ctx context.Context, profileName string) (*FleetVi
 	f := &Fleet{
 		ID:      newID(),
 		Profile: profileName,
+		Owner:   owner,
 		Board:   board,
 		Created: time.Now().UTC(),
 	}
 
 	for i := 0; i < replicas; i++ {
-		sb, err := m.CreateSandbox(ctx, profileName, CreateOptions{})
+		sb, err := m.CreateSandbox(ctx, profileName, CreateOptions{Owner: owner})
 		if err != nil {
 			// Best-effort teardown of anything already created.
 			for _, id := range f.Sandboxes {

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/Runewardd/runeward/internal/backend"
@@ -68,9 +69,13 @@ func (m *Manager) FileRead(ctx context.Context, id, path string) (*ToolResult, e
 	if err != nil {
 		return nil, err
 	}
+	resolvedPath, err := resolveFileToolPath(sess.Workdir, path)
+	if err != nil {
+		return nil, err
+	}
 	return m.govern(ctx, sess, "file.read", path, []string{path}, func(ctx context.Context) (*backend.ExecResult, error) {
 		// "--" stops a path that begins with "-" from being parsed as a flag.
-		return sess.Backend.Exec(ctx, id, backend.ExecRequest{Command: []string{"cat", "--", path}, Workdir: sess.Workdir, Env: sess.Env})
+		return sess.Backend.Exec(ctx, id, backend.ExecRequest{Command: []string{"cat", "--", resolvedPath}, Workdir: sess.Workdir, Env: sess.Env})
 	})
 }
 
@@ -81,8 +86,12 @@ func (m *Manager) FileWrite(ctx context.Context, id, path, content string) (*Too
 	if err != nil {
 		return nil, err
 	}
+	resolvedPath, err := resolveFileToolPath(sess.Workdir, path)
+	if err != nil {
+		return nil, err
+	}
 	b64 := base64.StdEncoding.EncodeToString([]byte(content))
-	script := fmt.Sprintf("mkdir -p \"$(dirname %s)\" && printf %%s '%s' | base64 -d > %s", shQuote(path), b64, shQuote(path))
+	script := fmt.Sprintf("mkdir -p \"$(dirname %s)\" && printf %%s '%s' | base64 -d > %s", shQuote(resolvedPath), b64, shQuote(resolvedPath))
 	return m.govern(ctx, sess, "file.write", path, []string{path}, func(ctx context.Context) (*backend.ExecResult, error) {
 		return sess.Backend.Exec(ctx, id, backend.ExecRequest{Command: []string{"sh", "-c", script}, Workdir: sess.Workdir, Env: sess.Env})
 	})
@@ -97,8 +106,12 @@ func (m *Manager) FileList(ctx context.Context, id, path string) (*ToolResult, e
 	if path == "" {
 		path = "."
 	}
+	resolvedPath, err := resolveFileToolPath(sess.Workdir, path)
+	if err != nil {
+		return nil, err
+	}
 	return m.govern(ctx, sess, "file.read", path, []string{path}, func(ctx context.Context) (*backend.ExecResult, error) {
-		return sess.Backend.Exec(ctx, id, backend.ExecRequest{Command: []string{"ls", "-la", "--", path}, Workdir: sess.Workdir, Env: sess.Env})
+		return sess.Backend.Exec(ctx, id, backend.ExecRequest{Command: []string{"ls", "-la", "--", resolvedPath}, Workdir: sess.Workdir, Env: sess.Env})
 	})
 }
 
@@ -111,10 +124,14 @@ func (m *Manager) FileSearch(ctx context.Context, id, query, path string) (*Tool
 	if path == "" {
 		path = "."
 	}
+	resolvedPath, err := resolveFileToolPath(sess.Workdir, path)
+	if err != nil {
+		return nil, err
+	}
 	return m.govern(ctx, sess, "file.read", query, []string{query, path}, func(ctx context.Context) (*backend.ExecResult, error) {
 		// "-e query" treats a leading-"-" query as a pattern, not a flag; "--"
 		// stops the path being parsed as a flag.
-		return sess.Backend.Exec(ctx, id, backend.ExecRequest{Command: []string{"grep", "-rn", "-e", query, "--", path}, Workdir: sess.Workdir, Env: sess.Env})
+		return sess.Backend.Exec(ctx, id, backend.ExecRequest{Command: []string{"grep", "-rn", "-e", query, "--", resolvedPath}, Workdir: sess.Workdir, Env: sess.Env})
 	})
 }
 
@@ -130,23 +147,32 @@ func (m *Manager) Browser(ctx context.Context, id, url, mode string) (*ToolResul
 	if url == "" {
 		return nil, fmt.Errorf("url is required")
 	}
-	script := browserScript(url, mode, sess.Env)
-	return m.govern(ctx, sess, "browser", url, []string{url, mode}, func(ctx context.Context) (*backend.ExecResult, error) {
+	script := browserScript(url, mode)
+	// A screenshot's stdout is a base64 PNG; skip the text secret-scrubber so it
+	// isn't masked as a high-entropy blob.
+	rawStdout := mode == "screenshot"
+	return m.governOut(ctx, sess, "browser", url, []string{url, mode}, rawStdout, func(ctx context.Context) (*backend.ExecResult, error) {
 		return sess.Backend.Exec(ctx, id, backend.ExecRequest{Command: []string{"sh", "-c", script}, Workdir: sess.Workdir, Env: sess.Env})
 	})
 }
 
-// browserScript builds the sh -c program that finds a Chromium binary and
-// renders url.
-func browserScript(url, mode string, env map[string]string) string {
-	proxy := env["HTTPS_PROXY"]
-	if proxy == "" {
-		proxy = env["HTTP_PROXY"]
+// browserScript builds the sh -c program that renders url. It prefers the
+// runeward-browser driver, which stands up a loopback forwarder that injects
+// Proxy-Authorization so a credentialed egress proxy works — Chromium's own
+// --proxy-server cannot carry credentials. The raw-Chromium fallback only works
+// with an unauthenticated (or no) proxy and exists for older images that lack
+// the driver.
+//
+// The egress proxy is read from the container's runtime env (HTTPS_PROXY /
+// HTTP_PROXY), which the backend injects at creation and `exec` inherits, not
+// from the control-plane's profile env.
+func browserScript(url, mode string) string {
+	renderMode := "text"
+	if mode == "screenshot" {
+		renderMode = "screenshot"
 	}
-	proxyArg := ""
-	if proxy != "" {
-		proxyArg = "--proxy-server=" + shQuote(proxy) + " "
-	}
+	rbCmd := `runeward-browser render --mode ` + renderMode + ` ${PROXY:+--proxy $PROXY} ` + shQuote(url)
+
 	find := `CHROME=$(command -v chromium 2>/dev/null || command -v chromium-browser 2>/dev/null || command -v google-chrome 2>/dev/null || command -v google-chrome-stable 2>/dev/null || command -v headless-shell 2>/dev/null || echo chromium)`
 	// Chromium's own sandbox needs user namespaces, which are usually
 	// unavailable in a container, so --no-sandbox is the default. Under a
@@ -157,13 +183,35 @@ func browserScript(url, mode string, env map[string]string) string {
 		sandbox = ""
 	}
 	flags := `--headless=new ` + sandbox + `--disable-gpu --disable-dev-shm-usage --hide-scrollbars`
+	var fallback string
 	if mode == "screenshot" {
-		return find + `; "$CHROME" ` + flags + ` ` + proxyArg + `--screenshot=/tmp/rw-shot.png ` + shQuote(url) + ` >/dev/null 2>&1; base64 /tmp/rw-shot.png`
+		fallback = find + `; "$CHROME" ` + flags + ` ${PROXY:+--proxy-server=$PROXY} --screenshot=/tmp/rw-shot.png ` + shQuote(url) + ` >/dev/null 2>&1; base64 /tmp/rw-shot.png`
+	} else {
+		fallback = find + `; "$CHROME" ` + flags + ` ${PROXY:+--proxy-server=$PROXY} --dump-dom ` + shQuote(url)
 	}
-	return find + `; "$CHROME" ` + flags + ` ` + proxyArg + `--dump-dom ` + shQuote(url)
+	return `PROXY="${HTTPS_PROXY:-$HTTP_PROXY}"; ` +
+		`if command -v runeward-browser >/dev/null 2>&1; then ` + rbCmd + `; else ` + fallback + `; fi`
 }
 
 // shQuote single-quotes s for safe interpolation into an `sh -c` script.
 func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func resolveFileToolPath(workdir, rel string) (string, error) {
+	if strings.TrimSpace(workdir) == "" {
+		return rel, nil
+	}
+	if filepath.IsAbs(rel) {
+		return "", badInputError("path %q must be relative to workspace", rel)
+	}
+	root, err := filepath.Abs(workdir)
+	if err != nil {
+		root = filepath.Clean(workdir)
+	}
+	cleaned := filepath.Clean(filepath.Join(root, rel))
+	if cleaned != root && !strings.HasPrefix(cleaned, root+string(os.PathSeparator)) {
+		return "", badInputError("path %q escapes workspace root", rel)
+	}
+	return cleaned, nil
 }

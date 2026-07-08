@@ -7,6 +7,8 @@
 # Environment overrides:
 #   RUNEWARD_VERSION   release tag to install (default: latest)
 #   RUNEWARD_BIN_DIR   install directory (default: /usr/local/bin, falls back to ~/.local/bin)
+#   RUNEWARD_INSECURE_SKIP_CHECKSUM=1   skip checksums.txt verification
+#   RUNEWARD_INSECURE_SKIP_SIGNATURE=1  skip cosign verification of checksums.txt
 #
 set -eu
 
@@ -67,14 +69,35 @@ trap 'rm -rf "$tmp"' EXIT
 info "Downloading ${asset}"
 $DLO "$tmp/$asset" "$base/$asset" || err "download failed: $base/$asset"
 
-# --- verify checksum (fail closed) --------------------------------------------
-# Set RUNEWARD_INSECURE_SKIP_CHECKSUM=1 to bypass (NOT recommended). By default a
-# missing checksums.txt, a missing entry, or a missing sha256 tool is a fatal
-# error rather than a silent skip, so a tampered download can't slip through.
+# --- verify release signatures + checksum (fail closed) -----------------------
+# By default we verify checksums.txt with cosign first, then verify the artifact
+# digest against checksums.txt. Missing files/tools or any mismatch is fatal.
+# Escape hatches (NOT recommended):
+#   - RUNEWARD_INSECURE_SKIP_SIGNATURE=1 bypasses cosign verification only.
+#   - RUNEWARD_INSECURE_SKIP_CHECKSUM=1 bypasses both signature + checksum checks.
 skip_checksum="${RUNEWARD_INSECURE_SKIP_CHECKSUM:-0}"
 if [ "$skip_checksum" = "1" ]; then
   warn "RUNEWARD_INSECURE_SKIP_CHECKSUM=1 set; skipping checksum verification"
 elif $DLO "$tmp/checksums.txt" "$base/checksums.txt" 2>/dev/null; then
+  skip_signature="${RUNEWARD_INSECURE_SKIP_SIGNATURE:-0}"
+  if [ "$skip_signature" = "1" ]; then
+    warn "RUNEWARD_INSECURE_SKIP_SIGNATURE=1 set; skipping checksums.txt signature verification"
+  else
+    need cosign
+    $DLO "$tmp/checksums.txt.sig" "$base/checksums.txt.sig" 2>/dev/null \
+      || err "no checksums.txt.sig published for $version; refusing unsigned checksums (set RUNEWARD_INSECURE_SKIP_SIGNATURE=1 to override)"
+    $DLO "$tmp/checksums.txt.pem" "$base/checksums.txt.pem" 2>/dev/null \
+      || err "no checksums.txt.pem published for $version; refusing unsigned checksums (set RUNEWARD_INSECURE_SKIP_SIGNATURE=1 to override)"
+    info "Verifying checksums signature"
+    cosign verify-blob \
+      --certificate "$tmp/checksums.txt.pem" \
+      --signature "$tmp/checksums.txt.sig" \
+      --certificate-identity-regexp '^https://github.com/Runewardd/runeward/\.github/workflows/release\.yml@refs/tags/.*$' \
+      --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+      "$tmp/checksums.txt" >/dev/null \
+      || err "cosign verification failed for checksums.txt (set RUNEWARD_INSECURE_SKIP_SIGNATURE=1 to override)"
+    info "Checksum signature OK"
+  fi
   info "Verifying checksum"
   want=$(grep " $asset\$" "$tmp/checksums.txt" 2>/dev/null | awk '{print $1}' | head -n1)
   [ -n "$want" ] || err "no checksum entry for $asset in checksums.txt (set RUNEWARD_INSECURE_SKIP_CHECKSUM=1 to override)"

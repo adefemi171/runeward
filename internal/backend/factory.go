@@ -1,20 +1,56 @@
 package backend
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/Runewardd/runeward/internal/profile"
+)
+
+const containerRuntimeEnv = "RUNEWARD_CONTAINER_RUNTIME"
+
+var (
+	containerRuntimeLookPath = exec.LookPath
+	newDockerBackend         = func() (Backend, error) { return NewDocker() }
+	newPodmanBackend         = func() (Backend, error) { return NewPodman() }
 )
 
 // For returns the backend implementing the profile's execution host.
 func For(p *profile.Profile) (Backend, error) {
 	switch p.Host.Type {
 	case profile.HostContainer, "":
-		return NewDocker()
+		runtime, err := selectContainerRuntime()
+		if err != nil {
+			return nil, err
+		}
+		if runtime == "podman" {
+			return newPodmanBackend()
+		}
+		return newDockerBackend()
 	case profile.HostK8s:
 		return NewK8s()
 	default:
 		return nil, fmt.Errorf("no backend for host.type %q", p.Host.Type)
+	}
+}
+
+func selectContainerRuntime() (string, error) {
+	runtime := strings.ToLower(strings.TrimSpace(os.Getenv(containerRuntimeEnv)))
+	switch runtime {
+	case "":
+		if _, err := containerRuntimeLookPath("docker"); err != nil {
+			if _, podmanErr := containerRuntimeLookPath("podman"); podmanErr == nil {
+				return "podman", nil
+			}
+		}
+		return "docker", nil
+	case "docker", "podman":
+		return runtime, nil
+	default:
+		return "", fmt.Errorf("unsupported %s %q (want docker or podman)", containerRuntimeEnv, runtime)
 	}
 }
 
@@ -39,6 +75,18 @@ func SpecFromProfile(p *profile.Profile, env map[string]string) Spec {
 			labelProfile: p.Name,
 		},
 	}
+}
+
+type restoreWithSpecBackend interface {
+	RestoreWithSpec(ctx context.Context, ref SnapshotRef, spec Spec) (*Sandbox, error)
+}
+
+// RestoreSnapshot restores a snapshot using the full spec path when supported.
+func RestoreSnapshot(ctx context.Context, be Backend, ref SnapshotRef, spec Spec) (*Sandbox, error) {
+	if rb, ok := be.(restoreWithSpecBackend); ok {
+		return rb.RestoreWithSpec(ctx, ref, spec)
+	}
+	return be.Restore(ctx, ref)
 }
 
 // resourcesFromLimits maps a profile's declared CPU/memory limits onto backend

@@ -124,6 +124,9 @@
             <button class="tab" data-tab="files">Files</button>
             <button class="tab" data-tab="shell">Shell</button>
             <button class="tab" data-tab="audit">Audit</button>
+            <button class="tab" data-tab="policy">Policy</button>
+            <button class="tab" data-tab="egress">Egress</button>
+            <button class="tab" data-tab="budget">Budget</button>
           </nav>
         </div>
 
@@ -243,6 +246,71 @@
                   <tr><td colspan="6" class="empty-note">No events yet.</td></tr>
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Policy simulation tab -->
+        <div class="tab-pane" data-pane="policy">
+          <div class="card">
+            <div class="card-head">
+              Policy simulation
+              <span class="card-head-hint">what would happen</span>
+            </div>
+            <div class="row">
+              <label class="inline-check">
+                <input id="sim-use-selected-profile" type="checkbox" checked />
+                Use selected sandbox profile
+              </label>
+              <select id="sim-profile-select" class="select">
+                <option value="">Loading profiles…</option>
+              </select>
+            </div>
+            <textarea id="sim-actions" class="textarea mono" spellcheck="false"
+              placeholder='One action per line. Format: tool | action&#10;Examples:&#10;shell | rm -rf /&#10;net | api.openai.com&#10;file.read | /workspace/README.md'></textarea>
+            <div class="row">
+              <button id="sim-run" class="btn btn-accent">Simulate</button>
+              <span id="sim-note" class="note"></span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">Simulation results</div>
+            <div id="sim-results" class="sim-results empty-note">Run a simulation to see verdicts and trace.</div>
+          </div>
+        </div>
+
+        <!-- Egress explorer tab -->
+        <div class="tab-pane" data-pane="egress">
+          <div class="card">
+            <div class="card-head">
+              Egress allow/deny explorer
+              <span class="card-head-hint">recent decisions</span>
+            </div>
+            <div class="row">
+              <button id="egress-refresh" class="btn">Refresh</button>
+            </div>
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr><th>Time</th><th>Host</th><th>IP</th><th>Verdict</th><th>Reason</th></tr>
+                </thead>
+                <tbody id="egress-body">
+                  <tr><td colspan="5" class="empty-note">No decisions yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Budget tab -->
+        <div class="tab-pane" data-pane="budget">
+          <div class="card">
+            <div class="card-head">
+              Budget burn-down
+              <span class="card-head-hint">read only</span>
+            </div>
+            <div id="budget-grid" class="budget-grid">
+              <div class="empty-note">Select a sandbox to load budget usage.</div>
             </div>
           </div>
         </div>

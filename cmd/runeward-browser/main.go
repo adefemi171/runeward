@@ -14,6 +14,8 @@
 package main
 
 import (
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -43,6 +45,8 @@ func main() {
 		runServe(os.Args[2:])
 	case "call":
 		runCall(os.Args[2:])
+	case "render":
+		runRender(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -56,8 +60,9 @@ func usage() {
 	fmt.Fprint(os.Stderr, `runeward-browser — in-sandbox CDP browser driver
 
 Usage:
-  runeward-browser serve --socket <path> [--proxy <url>]
-  runeward-browser call  --socket <path> [--json '<Command JSON>']
+  runeward-browser serve  --socket <path|tcp://addr> [--proxy <url>] [--token <secret>]
+  runeward-browser call   --socket <path|tcp://addr> [--token <secret>] [--json '<Command JSON>']
+  runeward-browser render [--mode text|screenshot] [--proxy <url>] <url>
 `)
 }
 
@@ -68,6 +73,11 @@ var chromeNames = []string{
 	"google-chrome-stable",
 	"headless-shell",
 }
+
+const (
+	envBrowserNoSandbox    = "RUNEWARD_BROWSER_NO_SANDBOX"
+	envBrowserControlToken = "RUNEWARD_BROWSER_CONTROL_TOKEN"
+)
 
 func findChrome() (string, error) {
 	for _, name := range chromeNames {
@@ -83,6 +93,7 @@ func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	socket := fs.String("socket", "", "path to the Unix domain control socket to listen on")
 	proxy := fs.String("proxy", "", "HTTP(S) proxy passed to Chromium via --proxy-server")
+	token := fs.String("token", "", "shared secret required on control requests (or RUNEWARD_BROWSER_CONTROL_TOKEN)")
 	_ = fs.Parse(args)
 
 	if *socket == "" {
@@ -91,6 +102,9 @@ func runServe(args []string) {
 	}
 
 	logger := logf("runeward-browser: ")
+	if *token == "" {
+		*token = strings.TrimSpace(os.Getenv(envBrowserControlToken))
+	}
 
 	chrome, err := findChrome()
 	if err != nil {
@@ -106,15 +120,26 @@ func runServe(args []string) {
 
 	chromeArgs := []string{
 		"--headless=new",
-		"--no-sandbox",
 		"--disable-gpu",
 		"--disable-dev-shm-usage",
 		"--hide-scrollbars",
 		"--remote-debugging-port=0",
 		"--user-data-dir=" + udd,
 	}
+	if browserNoSandboxEnabled() {
+		chromeArgs = append(chromeArgs, "--no-sandbox")
+	}
+	proxyStop := func() {}
 	if *proxy != "" {
-		chromeArgs = append(chromeArgs, "--proxy-server="+*proxy)
+		localProxy, stop, perr := startProxyAuthForwarder(*proxy, logger)
+		if perr != nil {
+			// Fall back to the raw URL; unauthenticated proxies still work.
+			logger("proxy-auth forwarder: %v (using proxy as-is)", perr)
+			localProxy = *proxy
+		} else {
+			proxyStop = stop
+		}
+		chromeArgs = append(chromeArgs, "--proxy-server="+localProxy)
 	}
 
 	cmd := exec.Command(chrome, chromeArgs...)
@@ -127,10 +152,12 @@ func runServe(args []string) {
 	}
 
 	d := &driver{
-		chrome: cmd,
-		udd:    udd,
-		socket: *socket,
-		logger: logger,
+		chrome:    cmd,
+		udd:       udd,
+		socket:    *socket,
+		token:     *token,
+		logger:    logger,
+		proxyStop: proxyStop,
 	}
 
 	port, err := waitForDevToolsPort(udd, 15*time.Second)
@@ -152,10 +179,14 @@ func runServe(args []string) {
 	}
 	d.client = client
 
-	ln, err := net.Listen("unix", *socket)
+	ln, network, err := listenControl(*socket)
 	if err != nil {
 		logger("listen %s: %v", *socket, err)
 		d.shutdown(1)
+	}
+	if network != "unix" && *token == "" {
+		logger("listen %s: --token (or %s) is required for network sockets", *socket, envBrowserControlToken)
+		d.shutdown(2)
 	}
 	d.ln = ln
 
@@ -181,14 +212,96 @@ func runServe(args []string) {
 	}
 }
 
+// runRender does a one-shot headless render of a single URL, printing the
+// rendered DOM (mode "text") or a base64-encoded PNG (mode "screenshot") to
+// stdout. It authenticates to a credentialed proxy exactly like `serve`, so
+// governed egress works for one-shot renders too.
+func runRender(args []string) {
+	fs := flag.NewFlagSet("render", flag.ExitOnError)
+	mode := fs.String("mode", "text", `"text" (rendered DOM) or "screenshot" (base64 PNG)`)
+	proxy := fs.String("proxy", "", "HTTP(S) proxy (embedded credentials are honored)")
+	_ = fs.Parse(args)
+	target := fs.Arg(0)
+	if target == "" {
+		fmt.Fprintln(os.Stderr, "render: a url argument is required")
+		os.Exit(2)
+	}
+
+	logger := logf("runeward-browser: ")
+	chrome, err := findChrome()
+	if err != nil {
+		logger("%v", err)
+		os.Exit(1)
+	}
+	udd, err := os.MkdirTemp("", "runeward-render-")
+	if err != nil {
+		logger("create user-data-dir: %v", err)
+		os.Exit(1)
+	}
+	defer func() { _ = os.RemoveAll(udd) }()
+
+	chromeArgs := []string{
+		"--headless=new",
+		"--disable-gpu",
+		"--disable-dev-shm-usage",
+		"--hide-scrollbars",
+		"--user-data-dir=" + udd,
+	}
+	if browserNoSandboxEnabled() {
+		chromeArgs = append(chromeArgs, "--no-sandbox")
+	}
+	if *proxy != "" {
+		localProxy, stop, perr := startProxyAuthForwarder(*proxy, logger)
+		if perr != nil {
+			logger("proxy-auth forwarder: %v (using proxy as-is)", perr)
+			localProxy = *proxy
+		} else {
+			defer stop()
+		}
+		chromeArgs = append(chromeArgs, "--proxy-server="+localProxy)
+	}
+
+	if *mode == "screenshot" {
+		shotPath := filepath.Join(udd, "shot.png")
+		chromeArgs = append(chromeArgs, "--screenshot="+shotPath, target)
+		cmd := exec.Command(chrome, chromeArgs...)
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+		if err := cmd.Run(); err != nil {
+			logger("chromium: %v", err)
+			os.Exit(1)
+		}
+		data, err := os.ReadFile(shotPath)
+		if err != nil {
+			logger("read screenshot: %v", err)
+			os.Exit(1)
+		}
+		enc := base64.NewEncoder(base64.StdEncoding, os.Stdout)
+		_, _ = enc.Write(data)
+		_ = enc.Close()
+		return
+	}
+
+	chromeArgs = append(chromeArgs, "--dump-dom", target)
+	cmd := exec.Command(chrome, chromeArgs...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		logger("chromium: %v", err)
+		os.Exit(1)
+	}
+}
+
 // driver holds the long-lived browser session state shared across connections.
 type driver struct {
 	client    *browser.Client
 	chrome    *exec.Cmd
 	udd       string
 	socket    string
+	token     string
 	ln        net.Listener
 	logger    func(string, ...any)
+	proxyStop func()
 	execMu    sync.Mutex
 	closeOnce sync.Once
 	closed    atomicBool
@@ -200,6 +313,9 @@ func (d *driver) closing() bool { return d.closed.get() }
 func (d *driver) shutdown(code int) {
 	d.closeOnce.Do(func() {
 		d.closed.set(true)
+		if d.proxyStop != nil {
+			d.proxyStop()
+		}
 		if d.ln != nil {
 			_ = d.ln.Close()
 		}
@@ -231,6 +347,10 @@ func (d *driver) handleConn(conn net.Conn) {
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
+	if d.token != "" && subtle.ConstantTimeCompare([]byte(cmd.Token), []byte(d.token)) != 1 {
+		writeResult(conn, browser.Result{Error: "unauthorized control token"})
+		return
+	}
 
 	if cmd.Action == "close" {
 		writeResult(conn, browser.Result{OK: true})
@@ -254,6 +374,9 @@ func (d *driver) execute(cmd browser.Command) browser.Result {
 	case "navigate":
 		if cmd.URL == "" {
 			return errResult("navigate: url is required")
+		}
+		if err := browser.ValidateNavigateURL(cmd.URL); err != nil {
+			return errResult(err.Error())
 		}
 		if err := d.client.Navigate(cmd.URL, timeout); err != nil {
 			return errResult(err.Error())
@@ -319,9 +442,43 @@ func writeResult(conn net.Conn, res browser.Result) {
 	_ = json.NewEncoder(conn).Encode(res)
 }
 
+// browserNoSandboxEnabled reports whether Chromium should launch with
+// --no-sandbox. Chromium's own sandbox needs user namespaces, which are
+// usually unavailable inside a container, so it is ON by default (matching the
+// one-shot render path in internal/controlplane). Under a runtime that provides
+// isolation (gVisor/Kata) or userns, operators can keep Chromium's sandbox by
+// setting RUNEWARD_BROWSER_NO_SANDBOX=0.
+func browserNoSandboxEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(envBrowserNoSandbox))) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+func listenControl(socket string) (net.Listener, string, error) {
+	socket = strings.TrimSpace(socket)
+	if strings.HasPrefix(socket, "tcp://") {
+		addr := strings.TrimPrefix(socket, "tcp://")
+		ln, err := net.Listen("tcp", addr)
+		return ln, "tcp", err
+	}
+	if strings.HasPrefix(socket, "unix://") {
+		path := strings.TrimPrefix(socket, "unix://")
+		_ = os.Remove(path)
+		ln, err := net.Listen("unix", path)
+		return ln, "unix", err
+	}
+	_ = os.Remove(socket)
+	ln, err := net.Listen("unix", socket)
+	return ln, "unix", err
+}
+
 func runCall(args []string) {
 	fs := flag.NewFlagSet("call", flag.ExitOnError)
 	socket := fs.String("socket", "", "path to the driver's Unix domain control socket")
+	token := fs.String("token", "", "shared secret for control requests (or RUNEWARD_BROWSER_CONTROL_TOKEN)")
 	jsonArg := fs.String("json", "", "Command JSON; if empty, read from stdin")
 	_ = fs.Parse(args)
 
@@ -346,6 +503,12 @@ func runCall(args []string) {
 	if err := json.Unmarshal(raw, &cmd); err != nil {
 		fmt.Fprintf(os.Stderr, "call: invalid command JSON: %v\n", err)
 		os.Exit(2)
+	}
+	if cmd.Token == "" {
+		if *token == "" {
+			*token = strings.TrimSpace(os.Getenv(envBrowserControlToken))
+		}
+		cmd.Token = *token
 	}
 
 	conn, err := net.Dial("unix", *socket)

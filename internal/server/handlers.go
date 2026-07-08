@@ -1,12 +1,20 @@
 package server
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/Runewardd/runeward/internal/backend"
 	"github.com/Runewardd/runeward/internal/browser"
 	"github.com/Runewardd/runeward/internal/controlplane"
+	"github.com/Runewardd/runeward/internal/egress"
+	"github.com/Runewardd/runeward/internal/policy"
 	"github.com/Runewardd/runeward/internal/profile"
 )
 
@@ -53,6 +61,69 @@ func (s *Server) handleListProfiles(w http.ResponseWriter, r *http.Request) {
 		profiles = []controlplane.ProfileInfo{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"profiles": profiles})
+}
+
+func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Kind      string `json:"kind"`
+		SandboxID string `json:"sandbox_id"`
+		Path      string `json:"path"`
+		TTLSecond int    `json:"ttl_seconds"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	scope := ticketScope{
+		Kind:      strings.ToLower(strings.TrimSpace(req.Kind)),
+		SandboxID: strings.TrimSpace(req.SandboxID),
+		Path:      strings.TrimSpace(req.Path),
+	}
+	if scope.Kind == "" {
+		if scope.SandboxID != "" {
+			scope.Kind = ticketKindTerminal
+		} else {
+			scope.Kind = ticketKindDownload
+		}
+	}
+	if scope.Kind == ticketKindTerminal && scope.SandboxID == "" {
+		writeError(w, http.StatusBadRequest, "sandbox_id is required for terminal tickets")
+		return
+	}
+	if scope.Kind == ticketKindTerminal {
+		if _, ok := s.mgr.Sandbox(scope.SandboxID); !ok {
+			writeError(w, http.StatusNotFound, "sandbox not found")
+			return
+		}
+		if p := principalFrom(r.Context()); p != nil && !p.Admin {
+			if owner, ok := s.mgr.SandboxOwner(scope.SandboxID); !ok || owner != p.Name {
+				writeError(w, http.StatusNotFound, "sandbox not found")
+				return
+			}
+		}
+	}
+	if scope.Kind == ticketKindDownload && scope.Path == "" {
+		scope.Path = "/v1/audit/export"
+	}
+	ttl := 30 * time.Second
+	if req.TTLSecond > 0 {
+		ttl = time.Duration(req.TTLSecond) * time.Second
+	}
+	ticket, expiresAt, err := s.issueTicket(scope, principalFrom(r.Context()), ttl)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"ticket":     ticket,
+		"expires_at": expiresAt.UTC(),
+		"scope": map[string]any{
+			"kind":       scope.Kind,
+			"sandbox_id": scope.SandboxID,
+			"path":       scope.Path,
+		},
+	})
 }
 
 func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
@@ -110,6 +181,15 @@ func (s *Server) handleGetSandbox(w http.ResponseWriter, r *http.Request) {
 	view := sandboxView(sb, owner)
 	u := s.mgr.SandboxUsage(id)
 	view["usage"] = map[string]any{"tokens": u.Tokens, "cost_usd": u.CostUSD}
+	if p, err := s.loadProfileByName(sb.Profile); err == nil {
+		view["limits"] = map[string]any{
+			"max_tokens":      p.Limits.MaxTokens,
+			"max_cost_usd":    p.Limits.MaxCostUSD,
+			"max_execs":       p.Limits.MaxExecs,
+			"egress_requests": p.Limits.EgressRequests,
+			"wall_clock":      p.Limits.WallClock,
+		}
+	}
 	writeJSON(w, http.StatusOK, view)
 }
 
@@ -298,6 +378,15 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListSnapshots(w http.ResponseWriter, r *http.Request) {
 	snaps := s.mgr.ListSnapshots()
+	if p := principalFrom(r.Context()); p != nil && !p.Admin {
+		filtered := make([]backend.SnapshotRef, 0, len(snaps))
+		for _, snap := range snaps {
+			if p.CanLaunch(snap.Profile) {
+				filtered = append(filtered, snap)
+			}
+		}
+		snaps = filtered
+	}
 	if snaps == nil {
 		snaps = []backend.SnapshotRef{}
 	}
@@ -307,6 +396,10 @@ func (s *Server) handleListSnapshots(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	owner := ""
 	if p := principalFrom(r.Context()); p != nil {
+		if !p.Admin && !s.snapshotVisibleTo(p, r.PathValue("id")) {
+			writeError(w, http.StatusNotFound, "snapshot not found")
+			return
+		}
 		owner = p.Name
 	}
 	sb, err := s.mgr.RestoreSnapshot(r.Context(), r.PathValue("id"), owner)
@@ -318,6 +411,10 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListApprovals(w http.ResponseWriter, r *http.Request) {
+	if p := principalFrom(r.Context()); p != nil && !p.MayApprove() {
+		writeError(w, http.StatusForbidden, "not authorized to view approvals")
+		return
+	}
 	list := s.mgr.Approvals().List()
 	if list == nil {
 		list = []controlplane.ApprovalView{}
@@ -394,6 +491,10 @@ func (s *Server) handleAuditPubKey(w http.ResponseWriter, r *http.Request) {
 // handleAuditExport streams a verifiable transcript bundle; ?session=<id>
 // narrows it to one session.
 func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
+	if p := principalFrom(r.Context()); p != nil && !p.Admin {
+		writeError(w, http.StatusForbidden, "not authorized to export audit bundle")
+		return
+	}
 	session := r.URL.Query().Get("session")
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=runeward-audit-bundle.json")
@@ -401,6 +502,218 @@ func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+}
+
+func (s *Server) handleEgressLog(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.mgr.Sandbox(id); !ok {
+		writeError(w, http.StatusNotFound, "sandbox not found")
+		return
+	}
+	// Strict egress sidecars run out-of-process, so only in-process host/transparent
+	// proxy decisions are currently visible in this bounded in-memory buffer.
+	decisions := egress.ListDecisions(id)
+	if decisions == nil {
+		decisions = []egress.Decision{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"decisions": decisions})
+}
+
+func (s *Server) handlePolicySimulate(w http.ResponseWriter, r *http.Request) {
+	type actionReq struct {
+		Name    string   `json:"name"`
+		Tool    string   `json:"tool"`
+		Arg     string   `json:"arg"`
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+	}
+	var req struct {
+		ProfileName string           `json:"profile_name"`
+		Profile     *profile.Profile `json:"profile"`
+		Actions     []actionReq      `json:"actions"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(req.Actions) == 0 {
+		writeError(w, http.StatusBadRequest, "actions is required")
+		return
+	}
+
+	p, err := s.resolveSimulationProfile(req.ProfileName, req.Profile)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	engine, err := simulationEngineForProfile(p)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	results := make([]map[string]any, 0, len(req.Actions))
+	for _, a := range req.Actions {
+		arg := strings.TrimSpace(a.Arg)
+		if arg == "" {
+			arg = strings.TrimSpace(a.Command)
+		}
+		if arg == "" && len(a.Args) > 0 {
+			arg = strings.Join(a.Args, " ")
+		}
+		act := policy.Action{
+			Tool: strings.TrimSpace(a.Tool),
+			Arg:  arg,
+			Args: a.Args,
+		}
+		dec := engine.Evaluate(act)
+		var matchedRule map[string]any
+		if dec.Rule != nil {
+			matchedRule = map[string]any{
+				"tool":       dec.Rule.Tool,
+				"match":      dec.Rule.Match,
+				"match_argv": dec.Rule.MatchArgv,
+				"verdict":    dec.Rule.Verdict,
+				"reason":     dec.Rule.Reason,
+			}
+		}
+		results = append(results, map[string]any{
+			"name":         a.Name,
+			"tool":         act.Tool,
+			"arg":          act.Arg,
+			"args":         act.Args,
+			"verdict":      dec.Verdict,
+			"reason":       dec.Reason,
+			"matched_rule": matchedRule,
+			"trace":        firstMatchTrace(p, act),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"profile": map[string]any{
+			"name":   p.Name,
+			"source": p.Source,
+		},
+		"results": results,
+	})
+}
+
+func (s *Server) resolveSimulationProfile(profileName string, inline *profile.Profile) (*profile.Profile, error) {
+	profileName = strings.TrimSpace(profileName)
+	if profileName == "" && inline == nil {
+		return nil, errors.New("profile_name or profile is required")
+	}
+	if profileName != "" && inline != nil {
+		return nil, errors.New("provide profile_name or profile, not both")
+	}
+	if profileName != "" {
+		return s.loadProfileByName(profileName)
+	}
+	p := *inline
+	if p.Name == "" {
+		p.Name = "inline"
+	}
+	if p.Host.Type == "" {
+		p.Host.Type = profile.HostContainer
+	}
+	if p.Host.Workdir == "" {
+		p.Host.Workdir = "/workspace"
+	}
+	if p.Host.Image == "" {
+		p.Host.Image = "ghcr.io/runewardd/runeward-sandbox:latest"
+	}
+	if err := p.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid inline profile: %w", err)
+	}
+	return &p, nil
+}
+
+func (s *Server) loadProfileByName(name string) (*profile.Profile, error) {
+	configDir := strings.TrimSpace(os.Getenv("RUNEWARD_CONFIG_DIR"))
+	return profile.Load(name, profile.Options{ConfigDir: configDir})
+}
+
+func simulationEngineForProfile(p *profile.Profile) (policy.Evaluator, error) {
+	noMatch := profile.VerdictAllow
+	if strings.EqualFold(strings.TrimSpace(string(p.PolicyDefault)), string(profile.VerdictDeny)) {
+		noMatch = profile.VerdictDeny
+	}
+	switch {
+	case p.UsesPolicyBundle():
+		return nil, fmt.Errorf("profile %q uses an OCI policy bundle (%s), which is not supported by policy simulation", p.Name, p.PolicyBundle.Ref)
+	case p.UsesRego():
+		module := p.Rego.Module
+		if module == "" && p.Rego.File != "" {
+			b, err := os.ReadFile(expandHomePath(p.Rego.File))
+			if err != nil {
+				return nil, fmt.Errorf("read rego policy %q: %w", p.Rego.File, err)
+			}
+			module = string(b)
+		}
+		return policy.NewRego(module, p.Rego.Query, noMatch)
+	case p.UsesCEL():
+		return policy.NewCEL(p.CEL, noMatch)
+	default:
+		return policy.New(p.Policy, noMatch), nil
+	}
+}
+
+func firstMatchTrace(p *profile.Profile, act policy.Action) []map[string]any {
+	trace := make([]map[string]any, 0)
+	switch {
+	case p.UsesCEL():
+		for i, rule := range p.CEL {
+			engine, err := policy.NewCEL([]profile.CELRule{rule}, profile.VerdictDeny)
+			matched := false
+			if err == nil {
+				matched = engine.Evaluate(act).Rule != nil
+			}
+			trace = append(trace, map[string]any{
+				"index":   i + 1,
+				"engine":  "cel",
+				"expr":    rule.Expr,
+				"verdict": rule.Verdict,
+				"matched": matched,
+			})
+			if matched {
+				break
+			}
+		}
+	case p.UsesRego():
+		trace = append(trace, map[string]any{
+			"index":   1,
+			"engine":  "rego",
+			"query":   p.Rego.Query,
+			"matched": true,
+		})
+	default:
+		for i, rule := range p.Policy {
+			engine := policy.New([]profile.PolicyRule{rule}, profile.VerdictDeny)
+			dec := engine.Evaluate(act)
+			matched := dec.Rule != nil
+			trace = append(trace, map[string]any{
+				"index":      i + 1,
+				"engine":     "builtin",
+				"tool":       rule.Tool,
+				"match":      rule.Match,
+				"match_argv": rule.MatchArgv,
+				"verdict":    rule.Verdict,
+				"matched":    matched,
+			})
+			if matched {
+				break
+			}
+		}
+	}
+	return trace
+}
+
+func expandHomePath(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+		}
+	}
+	return path
 }
 
 func sandboxView(sb *backend.Sandbox, owner string) map[string]any {

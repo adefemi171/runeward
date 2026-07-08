@@ -1,15 +1,15 @@
 # Sandbox image shipping real coding agents (Codex, Cursor CLI, Claude Code) so
 # they run headless inside a governed sandbox. Drive it with the *-agent.toml
 # example profiles. Runs as non-root user `agent` owning /workspace.
-FROM debian:stable-slim
+FROM debian:stable-slim@sha256:ee12ffb55625b99d62837a72f037d9b2f18fd0c787a89c2b9a4f09666c48776c
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         git curl ca-certificates python3 nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
-ARG CODEX_VERSION=latest
-ARG CLAUDE_CODE_VERSION=latest
+ARG CODEX_VERSION=0.142.5
+ARG CLAUDE_CODE_VERSION=2.1.201
 RUN npm install -g "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
 RUN useradd -m -u 1000 agent \
@@ -21,18 +21,18 @@ ENV HOME=/home/agent
 
 # Cursor CLI installs into the user's home (~/.local/bin or ~/.cursor/bin).
 # Rather than piping a remote script straight into a shell, download it to a
-# file first so it can be pinned/inspected. Set INSTALL_CURSOR=false to skip,
-# or CURSOR_INSTALLER_SHA256 to require the installer match a known digest
-# (build fails on mismatch, so a tampered/updated script can't run silently).
+# file first so it can be pinned/inspected. Set INSTALL_CURSOR=false to skip.
+# CURSOR_INSTALLER_SHA256 is required when INSTALL_CURSOR=true (missing or
+# mismatched digests fail closed, so a tampered/updated script can't run).
 ARG INSTALL_CURSOR=true
 ARG CURSOR_INSTALLER_SHA256=""
 RUN if [ "$INSTALL_CURSOR" = "true" ]; then \
       curl -fsS https://cursor.com/install -o /tmp/cursor-install.sh \
-      && if [ -n "$CURSOR_INSTALLER_SHA256" ]; then \
-           echo "${CURSOR_INSTALLER_SHA256}  /tmp/cursor-install.sh" | sha256sum -c - ; \
-         else \
-           echo "WARNING: installing Cursor CLI without a pinned checksum; set CURSOR_INSTALLER_SHA256 to verify" >&2 ; \
+      && if [ -z "$CURSOR_INSTALLER_SHA256" ]; then \
+           echo "CURSOR_INSTALLER_SHA256 is required when INSTALL_CURSOR=true" >&2 ; \
+           exit 1 ; \
          fi \
+      && echo "${CURSOR_INSTALLER_SHA256}  /tmp/cursor-install.sh" | sha256sum -c - \
       && bash /tmp/cursor-install.sh \
       && rm -f /tmp/cursor-install.sh ; \
     fi

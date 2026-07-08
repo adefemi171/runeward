@@ -81,6 +81,10 @@ Please disclose privately; do not open a public issue.
   (DNS-only egress) isolates sandbox pods (`RUNEWARD_K8S_NETWORK_POLICY`, or the
   chart's `networkPolicy.enabled`) so cells can't reach each other or the control
   plane laterally.
+- **Admission enforcement defaults.** The validating ClusterPolicy webhook is
+  fail-closed (`failurePolicy: Fail`) so webhook outages block admission for
+  governed resources. The mutating default-profile webhook is best-effort
+  (`failurePolicy: Ignore`) and only fills missing `spec.profile`.
 - **Supply-chain assurance.** Releases are cosign-signed (keyless) with SBOMs,
   and CI runs SAST (gosec, CodeQL), dependency/vuln scanning (govulncheck, Trivy),
   per-image CVE scans, and a DAST baseline, with Dependabot keeping dependencies

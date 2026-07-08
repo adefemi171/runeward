@@ -167,3 +167,40 @@ func TestStringifyValue(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateNavigateURL(t *testing.T) {
+	t.Setenv(envAllowPrivateNavigate, "")
+	cases := []struct {
+		name string
+		url  string
+		ok   bool
+	}{
+		{name: "http allowed", url: "http://example.com", ok: true},
+		{name: "https allowed", url: "https://example.com", ok: true},
+		{name: "about blank allowed", url: "about:blank", ok: true},
+		{name: "file blocked", url: "file:///etc/passwd", ok: false},
+		{name: "data blocked", url: "data:text/plain,boom", ok: false},
+		{name: "javascript blocked", url: "javascript:alert(1)", ok: false},
+		{name: "chrome blocked", url: "chrome://version", ok: false},
+		{name: "loopback blocked", url: "http://127.0.0.1:9222/json", ok: false},
+		{name: "localhost blocked", url: "http://localhost:8080", ok: false},
+		{name: "private blocked", url: "http://10.1.2.3", ok: false},
+		{name: "link local blocked", url: "http://169.254.169.254/latest/meta-data", ok: false},
+	}
+	for _, tc := range cases {
+		err := ValidateNavigateURL(tc.url)
+		if tc.ok && err != nil {
+			t.Fatalf("%s: unexpected error: %v", tc.name, err)
+		}
+		if !tc.ok && err == nil {
+			t.Fatalf("%s: expected error", tc.name)
+		}
+	}
+}
+
+func TestValidateNavigateURLAllowsPrivateWhenEnabled(t *testing.T) {
+	t.Setenv(envAllowPrivateNavigate, "1")
+	if err := ValidateNavigateURL("http://127.0.0.1:9222/json"); err != nil {
+		t.Fatalf("expected private host to be allowed when override is set: %v", err)
+	}
+}

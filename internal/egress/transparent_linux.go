@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -24,6 +25,8 @@ const peekLimit = 4096
 // SNI or the HTTP Host header. Linux-only.
 type TransparentProxy struct {
 	Policy Policy
+	// SandboxID associates decisions with a sandbox for dashboard egress logs.
+	SandboxID string
 	// Logger receives allow/deny decisions; nil discards them.
 	Logger *log.Logger
 }
@@ -32,6 +35,20 @@ func (t *TransparentProxy) logf(format string, args ...any) {
 	if t.Logger != nil {
 		t.Logger.Printf(format, args...)
 	}
+}
+
+func (t *TransparentProxy) sandboxID() string {
+	if id := strings.TrimSpace(t.SandboxID); id != "" {
+		return id
+	}
+	if t.Logger != nil {
+		return sandboxIDFromLoggerPrefix(t.Logger.Prefix())
+	}
+	return ""
+}
+
+func (t *TransparentProxy) recordDecision(host, ip string, allow bool, reason string) {
+	RecordDecision(t.sandboxID(), host, ip, allow, reason)
 }
 
 // Serve handles redirected connections on addr until an accept error occurs.
@@ -80,9 +97,28 @@ func (t *TransparentProxy) handle(c *net.TCPConn) {
 	}
 
 	allowed := false
+	pinnedDst := dst
 	switch {
 	case host != "":
-		allowed = t.Policy.Allow(host)
+		// In strict mode, a presented hostname must be explicitly allowlisted.
+		allowed = t.Policy.AllowListedHostname(host)
+		if allowed {
+			dstHost, dstPort, splitErr := net.SplitHostPort(dst)
+			if splitErr != nil {
+				allowed = false
+				t.logf("egress: DENY %s (invalid original dst %q: %v)", host, dst, splitErr)
+				t.recordDecision(host, "", false, "invalid original destination")
+				break
+			}
+			pinned, pinErr := pinnedAddrForHost(host, dstPort, net.ParseIP(strings.Trim(dstHost, "[]")))
+			if pinErr != nil {
+				allowed = false
+				t.logf("egress: DENY %s (resolve failed: %v)", host, pinErr)
+				t.recordDecision(host, "", false, "hostname resolution failed")
+				break
+			}
+			pinnedDst = pinned
+		}
 	default:
 		// No hostname; fall back to the raw IP against CIDR rules.
 		allowed = t.Policy.AllowAddr(dst)
@@ -92,15 +128,18 @@ func (t *TransparentProxy) handle(c *net.TCPConn) {
 	if label == "" {
 		label = dst
 	}
+	pinnedIP, _, _ := net.SplitHostPort(pinnedDst)
 	if !allowed {
 		t.logf("egress: DENY %s (dst=%s)", label, dst)
+		t.recordDecision(label, pinnedIP, false, "blocked by egress policy")
 		return
 	}
-	t.logf("egress: ALLOW %s (dst=%s)", label, dst)
+	t.logf("egress: ALLOW %s (dst=%s pinned=%s)", label, dst, pinnedDst)
+	t.recordDecision(label, pinnedIP, true, "allowed by egress policy")
 
-	up, err := net.DialTimeout("tcp", dst, dialTimeout)
+	up, err := net.DialTimeout("tcp", pinnedDst, dialTimeout)
 	if err != nil {
-		t.logf("egress: dial %s failed: %v", dst, err)
+		t.logf("egress: dial %s failed: %v", pinnedDst, err)
 		return
 	}
 	defer up.Close()

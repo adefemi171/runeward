@@ -104,3 +104,16 @@ func TestAllCoversRegistry(t *testing.T) {
 		}
 	}
 }
+
+func TestBlockProdEgressOrderingGuidanceMatchesEngine(t *testing.T) {
+	body, err := Render("block-prod")
+	if err != nil {
+		t.Fatalf("Render(block-prod): %v", err)
+	}
+	if strings.Contains(body, "Deny rules are evaluated\n# before any allow rules") {
+		t.Fatalf("block-prod contains deny-precedence wording that does not match first-match egress behavior")
+	}
+	if !strings.Contains(body, "Egress rules are first-match") {
+		t.Fatalf("block-prod should document first-match egress ordering")
+	}
+}

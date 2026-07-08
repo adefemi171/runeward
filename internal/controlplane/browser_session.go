@@ -26,6 +26,7 @@ const browserReadyTimeout = 20 * time.Second
 type browserSession struct {
 	id     string
 	socket string
+	token  string
 }
 
 // BrowserOpen starts a stateful CDP browser session in the sandbox and returns
@@ -40,18 +41,16 @@ func (m *Manager) BrowserOpen(ctx context.Context, id string) (sessionID string,
 
 	sid := randID()
 	socket := fmt.Sprintf("/tmp/rw-browser-%s.sock", sid)
-	proxy := sess.Env["HTTPS_PROXY"]
-	if proxy == "" {
-		proxy = sess.Env["HTTP_PROXY"]
-	}
-	proxyArg := ""
-	if proxy != "" {
-		proxyArg = " --proxy " + shQuote(proxy)
-	}
+	token := randID() + randID()
+	// The egress proxy is injected into the *container's* environment by the
+	// backend (see proxyEnv), not the control-plane's profile env, so read it at
+	// runtime inside the sandbox. runeward-browser stands up a loopback
+	// forwarder to satisfy the proxy's Basic auth (Chromium can't).
 	start := fmt.Sprintf(
 		"command -v %s >/dev/null 2>&1 || { echo 'runeward-browser not found in sandbox image' >&2; exit 127; }; "+
-			"setsid %s serve --socket %s%s >/tmp/rw-browser-%s.log 2>&1 & echo started",
-		browserDriverBin, browserDriverBin, shQuote(socket), proxyArg, sid,
+			"PROXY=\"${HTTPS_PROXY:-$HTTP_PROXY}\"; "+
+			"setsid %s serve --socket %s --token %s ${PROXY:+--proxy $PROXY} >/tmp/rw-browser-%s.log 2>&1 & echo started",
+		browserDriverBin, browserDriverBin, shQuote(socket), shQuote(token), sid,
 	)
 
 	res, err = m.govern(ctx, sess, "browser", "open", []string{"open", sid}, func(ctx context.Context) (*backend.ExecResult, error) {
@@ -67,7 +66,7 @@ func (m *Manager) BrowserOpen(ctx context.Context, id string) (sessionID string,
 		return "", nil, fmt.Errorf("start browser driver: %s", strings.TrimSpace(res.Stderr+res.Stdout))
 	}
 
-	if err := m.browserWaitReady(ctx, sess, id, socket); err != nil {
+	if err := m.browserWaitReady(ctx, sess, id, socket, token); err != nil {
 		return "", nil, err
 	}
 
@@ -75,7 +74,7 @@ func (m *Manager) BrowserOpen(ctx context.Context, id string) (sessionID string,
 	if sess.browsers == nil {
 		sess.browsers = map[string]*browserSession{}
 	}
-	sess.browsers[sid] = &browserSession{id: sid, socket: socket}
+	sess.browsers[sid] = &browserSession{id: sid, socket: socket, token: token}
 	sess.browserMu.Unlock()
 
 	return sid, res, nil
@@ -97,11 +96,12 @@ func (m *Manager) BrowserAct(ctx context.Context, id, sessionID string, cmd brow
 		return nil, fmt.Errorf("action is required")
 	}
 
+	cmd.Token = bs.token
 	payload, err := json.Marshal(cmd)
 	if err != nil {
 		return nil, err
 	}
-	call := []string{browserDriverBin, "call", "--socket", bs.socket, "--json", string(payload)}
+	call := []string{browserDriverBin, "call", "--socket", bs.socket, "--token", bs.token, "--json", string(payload)}
 
 	arg := cmd.Action
 	switch {
@@ -111,7 +111,11 @@ func (m *Manager) BrowserAct(ctx context.Context, id, sessionID string, cmd brow
 		arg = cmd.Action + " " + cmd.Selector
 	}
 
-	res, err := m.govern(ctx, sess, "browser", arg, call, func(ctx context.Context) (*backend.ExecResult, error) {
+	// A screenshot action returns a base64 PNG in the driver's JSON; skip the
+	// text secret-scrubber for stdout so the image isn't masked as a
+	// high-entropy blob before we parse it out below.
+	rawStdout := cmd.Action == "screenshot"
+	res, err := m.governOut(ctx, sess, "browser", arg, call, rawStdout, func(ctx context.Context) (*backend.ExecResult, error) {
 		return sess.Backend.Exec(ctx, id, backend.ExecRequest{Command: call, Workdir: sess.Workdir, Env: sess.Env})
 	})
 	if err != nil {
@@ -146,9 +150,9 @@ func (m *Manager) BrowserClose(ctx context.Context, id, sessionID string) error 
 	if err != nil {
 		return err
 	}
-	payload, _ := json.Marshal(browser.Command{Action: "close"})
+	payload, _ := json.Marshal(browser.Command{Action: "close", Token: bs.token})
 	_, _ = sess.Backend.Exec(ctx, id, backend.ExecRequest{
-		Command: []string{browserDriverBin, "call", "--socket", bs.socket, "--json", string(payload)},
+		Command: []string{browserDriverBin, "call", "--socket", bs.socket, "--token", bs.token, "--json", string(payload)},
 		Workdir: sess.Workdir, Env: sess.Env,
 	})
 	sess.browserMu.Lock()
@@ -160,10 +164,10 @@ func (m *Manager) BrowserClose(ctx context.Context, id, sessionID string) error 
 
 // browserWaitReady pings the driver socket until it answers or the timeout
 // elapses.
-func (m *Manager) browserWaitReady(ctx context.Context, sess *Session, id, socket string) error {
-	ping, _ := json.Marshal(browser.Command{Action: "ping"})
+func (m *Manager) browserWaitReady(ctx context.Context, sess *Session, id, socket, token string) error {
+	ping, _ := json.Marshal(browser.Command{Action: "ping", Token: token})
 	deadline := time.Now().Add(browserReadyTimeout)
-	call := []string{browserDriverBin, "call", "--socket", socket, "--json", string(ping)}
+	call := []string{browserDriverBin, "call", "--socket", socket, "--token", token, "--json", string(ping)}
 	for {
 		res, err := sess.Backend.Exec(ctx, id, backend.ExecRequest{Command: call, Workdir: sess.Workdir, Env: sess.Env})
 		if err == nil && res.ExitCode == 0 {
@@ -188,7 +192,7 @@ func (s *Session) browser(sessionID string) (*browserSession, error) {
 	defer s.browserMu.Unlock()
 	bs, ok := s.browsers[sessionID]
 	if !ok {
-		return nil, fmt.Errorf("browser session %q not found", sessionID)
+		return nil, notFoundError("browser session %q not found", sessionID)
 	}
 	return bs, nil
 }

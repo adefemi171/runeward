@@ -16,12 +16,28 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const terminalTicketTTL = 30 * time.Second
+
 // controlMessage is a JSON control frame from the browser terminal (e.g.
 // resize). Anything else on the socket is raw keystroke input.
 type controlMessage struct {
 	Type string `json:"type"`
 	Rows uint16 `json:"rows"`
 	Cols uint16 `json:"cols"`
+}
+
+func (s *Server) handleTerminalTicket(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	p := principalFrom(r.Context())
+	ticket, expiresAt, err := s.issueTerminalTicket(id, p, terminalTicketTTL)
+	if err != nil {
+		writeServerError(w, s.logger, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"ticket":     ticket,
+		"expires_at": expiresAt.UTC(),
+	})
 }
 
 // handleTerminal upgrades to a WebSocket and bridges it to a sandbox PTY,

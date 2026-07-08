@@ -66,15 +66,21 @@ func NewCEL(rules []profile.CELRule, def profile.Verdict) (*CELEngine, error) {
 }
 
 // Evaluate renders a Decision for a; the first rule whose expression is true
-// wins. A rule whose evaluation errors is skipped so one bad rule cannot
-// wedge the engine. No match returns the default verdict with a nil Rule.
+// wins. A rule evaluation error fails closed to deny. No match returns the
+// default verdict with a nil Rule.
 func (e *CELEngine) Evaluate(a Action) Decision {
 	vars := map[string]any{"tool": a.Tool, "arg": a.Arg}
 	for i := range e.rules {
 		r := &e.rules[i]
 		out, _, err := r.prg.Eval(vars)
 		if err != nil {
-			continue
+			reason := fmt.Sprintf("policy: cel rule %d evaluation error: %v", i, err)
+			rule := r.src
+			return Decision{
+				Verdict: profile.VerdictDeny,
+				Reason:  reason,
+				Rule:    &profile.PolicyRule{Tool: a.Tool, Match: rule.Expr, Verdict: profile.VerdictDeny, Reason: reason},
+			}
 		}
 		if isTrue(out) {
 			rule := r.src // stable copy for the pointer in Decision

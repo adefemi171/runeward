@@ -14,8 +14,11 @@ Everything else that isn't a 2xx becomes a :class:`RunewardError`.
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
+import urllib.parse
 import urllib.request
+import warnings
 from typing import Any, Dict, List, Optional
 
 __all__ = [
@@ -80,9 +83,11 @@ class RunewardClient:
     """
 
     def __init__(self, base_url: str = "http://localhost:8080", *,
-                 timeout: float = 60.0, token: Optional[str] = None) -> None:
+                 timeout: float = 60.0, token: Optional[str] = None,
+                 allow_insecure: bool = False) -> None:
         # Normalize so we can safely join paths without doubling slashes.
-        self.base_url = base_url.rstrip("/")
+        self.base_url = self._normalize_base_url(base_url)
+        self._validate_transport(self.base_url, allow_insecure)
         self.timeout = timeout
         self.token = token
 
@@ -133,6 +138,49 @@ class RunewardClient:
             return {"raw": raw.decode("utf-8", "replace")}
 
     @staticmethod
+    def _normalize_base_url(base_url: str) -> str:
+        base_url = base_url.strip()
+        parsed = urllib.parse.urlsplit(base_url)
+        if not parsed.scheme:
+            base_url = f"https://{base_url}"
+        return base_url.rstrip("/")
+
+    @staticmethod
+    def _is_loopback_host(hostname: Optional[str]) -> bool:
+        if not hostname:
+            return False
+        host = hostname.lower().strip("[]")
+        return host in {"localhost", "127.0.0.1", "::1"}
+
+    @staticmethod
+    def _env_allows_insecure() -> bool:
+        value = os.environ.get("RUNEWARD_ALLOW_INSECURE_HTTP", "").strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
+    @classmethod
+    def _validate_transport(cls, base_url: str, allow_insecure: bool) -> None:
+        parsed = urllib.parse.urlsplit(base_url)
+        if parsed.scheme != "http":
+            return
+        if cls._is_loopback_host(parsed.hostname):
+            return
+        if allow_insecure or cls._env_allows_insecure():
+            warnings.warn(
+                f"runeward client using insecure HTTP transport to non-loopback host: {base_url}",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            return
+        raise ValueError(
+            "refusing insecure http:// base URL to non-loopback host; "
+            "use https://, set allow_insecure=True, or set RUNEWARD_ALLOW_INSECURE_HTTP=1"
+        )
+
+    @staticmethod
+    def _segment(value: str) -> str:
+        return urllib.parse.quote(value, safe="")
+
+    @staticmethod
     def _raise_for_status(status: int, payload: Dict[str, Any]) -> None:
         if status == 403 or payload.get("verdict") == "deny":
             raise RunewardDenied(payload.get("reason", "denied by policy"), payload=payload)
@@ -168,11 +216,11 @@ class RunewardClient:
 
     def get_sandbox(self, sandbox: str) -> Dict[str, Any]:
         """``GET /v1/sandboxes/{id}``."""
-        return self._request("GET", f"/v1/sandboxes/{sandbox}")
+        return self._request("GET", f"/v1/sandboxes/{self._segment(sandbox)}")
 
     def kill_sandbox(self, sandbox: str) -> Any:
         """``DELETE /v1/sandboxes/{id}`` — tear the sandbox down."""
-        return self._request("DELETE", f"/v1/sandboxes/{sandbox}")
+        return self._request("DELETE", f"/v1/sandboxes/{self._segment(sandbox)}")
 
     # -- execution ---------------------------------------------------------
 
@@ -184,43 +232,43 @@ class RunewardClient:
         error, not a policy denial.
         """
         return self._request(
-            "POST", f"/v1/sandboxes/{sandbox}/shell/exec",
+            "POST", f"/v1/sandboxes/{self._segment(sandbox)}/shell/exec",
             {"command": list(command), "workdir": workdir},
         )
 
     def python(self, sandbox: str, code: str) -> Dict[str, Any]:
         """``POST .../code/python`` — run a Python snippet in the sandbox."""
-        return self._request("POST", f"/v1/sandboxes/{sandbox}/code/python", {"code": code})
+        return self._request("POST", f"/v1/sandboxes/{self._segment(sandbox)}/code/python", {"code": code})
 
     def node(self, sandbox: str, code: str) -> Dict[str, Any]:
         """``POST .../code/node`` — run a Node.js snippet in the sandbox."""
-        return self._request("POST", f"/v1/sandboxes/{sandbox}/code/node", {"code": code})
+        return self._request("POST", f"/v1/sandboxes/{self._segment(sandbox)}/code/node", {"code": code})
 
     # -- files -------------------------------------------------------------
 
     def read_file(self, sandbox: str, path: str) -> str:
         """``POST .../file/read`` — return the file's ``content``."""
         return self._request(
-            "POST", f"/v1/sandboxes/{sandbox}/file/read", {"path": path}
+            "POST", f"/v1/sandboxes/{self._segment(sandbox)}/file/read", {"path": path}
         ).get("content", "")
 
     def write_file(self, sandbox: str, path: str, content: str) -> int:
         """``POST .../file/write`` — write ``content``; return ``bytes`` written."""
         return self._request(
-            "POST", f"/v1/sandboxes/{sandbox}/file/write",
+            "POST", f"/v1/sandboxes/{self._segment(sandbox)}/file/write",
             {"path": path, "content": content},
         ).get("bytes", 0)
 
     def list_files(self, sandbox: str, path: str) -> str:
         """``POST .../file/list`` — list a directory; return the raw ``output``."""
         return self._request(
-            "POST", f"/v1/sandboxes/{sandbox}/file/list", {"path": path}
+            "POST", f"/v1/sandboxes/{self._segment(sandbox)}/file/list", {"path": path}
         ).get("output", "")
 
     def search_files(self, sandbox: str, query: str, path: str) -> str:
         """``POST .../file/search`` — search for ``query`` under ``path``."""
         return self._request(
-            "POST", f"/v1/sandboxes/{sandbox}/file/search",
+            "POST", f"/v1/sandboxes/{self._segment(sandbox)}/file/search",
             {"query": query, "path": path},
         ).get("output", "")
 
@@ -228,7 +276,7 @@ class RunewardClient:
 
     def audit(self, sandbox: str) -> List[Dict[str, Any]]:
         """``GET .../audit`` — this sandbox's ledger events."""
-        return self._request("GET", f"/v1/sandboxes/{sandbox}/audit").get("events", [])
+        return self._request("GET", f"/v1/sandboxes/{self._segment(sandbox)}/audit").get("events", [])
 
     def verify_audit(self) -> bool:
         """``GET /v1/audit/verify`` — verify the ledger hash chain."""
@@ -242,8 +290,8 @@ class RunewardClient:
 
     def approve(self, approval_id: str) -> Any:
         """``POST /v1/approvals/{id}/approve``."""
-        return self._request("POST", f"/v1/approvals/{approval_id}/approve")
+        return self._request("POST", f"/v1/approvals/{self._segment(approval_id)}/approve")
 
     def deny(self, approval_id: str) -> Any:
         """``POST /v1/approvals/{id}/deny``."""
-        return self._request("POST", f"/v1/approvals/{approval_id}/deny")
+        return self._request("POST", f"/v1/approvals/{self._segment(approval_id)}/deny")

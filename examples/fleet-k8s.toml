@@ -1,11 +1,15 @@
-# A Kubernetes-backed multi-agent fleet: N pods from one contract sharing an
-# atomic task board. Use this (instead of the Docker-backed fleet-demo) when the
-# controller runs IN-CLUSTER, since a controller pod has no Docker socket.
+# A Kubernetes-backed fleet: N sandboxes from one contract sharing an atomic
+# task board, each provisioned as a pod by the k8s backend. Use this (rather
+# than the container-backed fleet-demo) for ClusterFleet / in-cluster
+# controller flows, where there is no Docker daemon to talk to.
+#
+# The name starts with "fleet-" so it satisfies the allowedProfiles
+# ["k8s", "fleet-*"] guardrail in the §6d ClusterPolicy example.
 #
 #   kubectl apply -f - <<'EOF'
 #   apiVersion: runeward.dev/v1alpha1
 #   kind: ClusterFleet
-#   metadata: { name: shared-crew }
+#   metadata: { name: shared-crew, labels: { owner: alice } }
 #   spec: { profile: fleet-k8s }
 #   EOF
 

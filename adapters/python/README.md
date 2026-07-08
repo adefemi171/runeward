@@ -49,6 +49,8 @@ print(rw.python(sid, "exec(open('/workspace/main.py').read())")["stdout"])  # "4
 rw.kill_sandbox(sid)                    # always tear down when done
 ```
 
+Use `allow_insecure=True` (or `RUNEWARD_ALLOW_INSECURE_HTTP=1`) only when you must call a non-loopback `http://` control-plane endpoint.
+
 ### Handling governance verdicts
 
 The two governance outcomes are raised as typed exceptions. Handle them

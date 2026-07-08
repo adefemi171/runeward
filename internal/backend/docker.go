@@ -25,6 +25,7 @@ import (
 // Docker provisions one container per sandbox. It drives the docker CLI
 // rather than the SDK; the CLI contract is more stable across
 type Docker struct {
+	runtime string
 	bin     string
 	snapDir string
 
@@ -45,9 +46,13 @@ const (
 // NewDocker returns a Docker backend, verifying the CLI is present and the
 // engine is actually reachable so misconfig fails fast with a clear message.
 func NewDocker() (*Docker, error) {
-	bin, err := exec.LookPath("docker")
+	return newDockerWithRuntime("docker")
+}
+
+func newDockerWithRuntime(runtime string) (*Docker, error) {
+	bin, err := exec.LookPath(runtime)
 	if err != nil {
-		return nil, fmt.Errorf("docker CLI not found in PATH (install docker and add it to your PATH): %w", err)
+		return nil, fmt.Errorf("%s CLI not found in PATH (install %s and add it to your PATH): %w", runtime, runtime, err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -59,7 +64,7 @@ func NewDocker() (*Docker, error) {
 		if detail == "" {
 			detail = err.Error()
 		}
-		return nil, fmt.Errorf("docker engine not reachable; is Docker running? (%s)", detail)
+		return nil, fmt.Errorf("%s engine not reachable; is %s running? (%s)", runtime, runtime, detail)
 	}
 	cache, err := os.UserCacheDir()
 	if err != nil {
@@ -70,6 +75,7 @@ func NewDocker() (*Docker, error) {
 		return nil, fmt.Errorf("create snapshot dir: %w", err)
 	}
 	return &Docker{
+		runtime:   runtime,
 		bin:       bin,
 		snapDir:   snapDir,
 		proxies:   make(map[string]*hostProxy),
@@ -77,7 +83,12 @@ func NewDocker() (*Docker, error) {
 	}, nil
 }
 
-func (d *Docker) Name() string { return "docker" }
+func (d *Docker) Name() string {
+	if d.runtime == "" {
+		return "docker"
+	}
+	return d.runtime
+}
 
 func (d *Docker) Create(ctx context.Context, spec Spec) (*Sandbox, error) {
 	id := newID()
@@ -111,13 +122,16 @@ func (d *Docker) Create(ctx context.Context, spec Spec) (*Sandbox, error) {
 			}
 			egressCtrName = ctrName
 		} else {
+			// Cooperative mode enforces hostname policy through HTTP(S)_PROXY, but
+			// cannot fully police non-proxy protocols (like UDP/QUIC) without the
+			// strict sidecar/netns path.
 			p, err := startHostProxy(policyFromNetwork(spec.Network), log.New(os.Stderr, "runeward-egress "+id+" ", log.LstdFlags))
 			if err != nil {
 				_ = d.run(context.Background(), "volume", "rm", "-f", vol)
 				return nil, fmt.Errorf("start egress proxy: %w", err)
 			}
 			hp = p
-			egressEnv = proxyEnv(fmt.Sprintf("http://%s:%s@host.docker.internal:%d", p.user, p.pass, p.port))
+			egressEnv = proxyEnv(fmt.Sprintf("http://%s:%s@%s:%d", p.user, p.pass, d.hostGatewayName(), p.port))
 		}
 	}
 
@@ -136,7 +150,15 @@ func (d *Docker) Create(ctx context.Context, spec Spec) (*Sandbox, error) {
 		args = append(args, "--network", "container:"+egressCtrName)
 	}
 	if hp != nil {
-		args = append(args, "--add-host", "host.docker.internal:host-gateway")
+		if d.Name() == "docker" {
+			args = append(args, "--add-host", "host.docker.internal:host-gateway")
+		}
+		// Prevent IPv6 egress bypass in cooperative mode where only HTTP(S)
+		// traffic is proxied.
+		args = append(args,
+			"--sysctl", "net.ipv6.conf.all.disable_ipv6=1",
+			"--sysctl", "net.ipv6.conf.default.disable_ipv6=1",
+		)
 	}
 	if spec.RuntimeClass != "" {
 		args = append(args, "--runtime", spec.RuntimeClass)
@@ -277,7 +299,7 @@ func (d *Docker) Exec(ctx context.Context, id string, req ExecRequest) (*ExecRes
 			res.ExitCode = ee.ExitCode()
 			return res, nil
 		}
-		return res, fmt.Errorf("docker exec: %w", err)
+		return res, fmt.Errorf("%s exec: %w", d.Name(), err)
 	}
 	return res, nil
 }
@@ -394,7 +416,11 @@ func (d *Docker) seedWorkspace(ctx context.Context, id, workdir, srcDir string) 
 		return err
 	}
 	pr, pw := io.Pipe()
-	go func() { pw.CloseWithError(writeDirTar(pw, srcDir)) }()
+	go func() {
+		rawPr, rawPw := io.Pipe()
+		go func() { rawPw.CloseWithError(writeDirTar(rawPw, srcDir)) }()
+		pw.CloseWithError(filterTarSafe(pw, rawPr))
+	}()
 
 	cmd := exec.CommandContext(ctx, d.bin, "exec", "-i", containerName(id), "tar", "-C", workdir, "-xf", "-")
 	cmd.Stdin = pr
@@ -466,7 +492,14 @@ func (d *Docker) Snapshot(ctx context.Context, id, name string) (*SnapshotRef, e
 }
 
 func (d *Docker) Restore(ctx context.Context, ref SnapshotRef) (*Sandbox, error) {
-	sb, err := d.Create(ctx, Spec{Profile: ref.Profile})
+	return d.RestoreWithSpec(ctx, ref, Spec{Profile: ref.Profile})
+}
+
+func (d *Docker) RestoreWithSpec(ctx context.Context, ref SnapshotRef, spec Spec) (*Sandbox, error) {
+	if spec.Profile == "" {
+		spec.Profile = ref.Profile
+	}
+	sb, err := d.Create(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -636,9 +669,16 @@ func (d *Docker) output(ctx context.Context, args ...string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return stdout.String(), fmt.Errorf("docker %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+		return stdout.String(), fmt.Errorf("%s %s: %w: %s", d.Name(), args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
+}
+
+func (d *Docker) hostGatewayName() string {
+	if d.Name() == "podman" {
+		return "host.containers.internal"
+	}
+	return "host.docker.internal"
 }
 
 func (d *Docker) workdir(ctx context.Context, id string) (string, error) {

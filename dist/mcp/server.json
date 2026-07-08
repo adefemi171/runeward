@@ -1,8 +1,8 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Runewardd/runeward",
-  "description": "Governed execution cells for AI agents: provision isolated Docker/Kubernetes sandboxes from declarative TOML profiles and run shell, Python, Node, and file tools through a policy engine, tamper-evident audit ledger, cost/loop guardrails, and human-in-the-loop approval gates.",
-  "version": "0.1.0",
+  "description": "Governed execution cells for AI agents: Docker/K8s sandboxes with policy, audit, and approvals.",
+  "version": "0.1.4",
   "repository": {
     "url": "https://github.com/Runewardd/runeward",
     "source": "github"
@@ -10,9 +10,8 @@
   "packages": [
     {
       "registryType": "oci",
-      "registryBaseUrl": "https://ghcr.io",
-      "identifier": "ghcr.io/runewardd/runeward",
-      "version": "0.1.0",
+      "identifier": "ghcr.io/runewardd/runeward:v0.1.4",
+      "version": "0.1.4",
       "transport": {
         "type": "stdio"
       },
@@ -33,19 +32,6 @@
         {
           "name": "RUNEWARD_STATE_DIR",
           "description": "Directory where the tamper-evident audit ledger is written (optional).",
-          "isRequired": false
-        }
-      ]
-    }
-  ],
-  "remotes": [
-    {
-      "type": "streamable-http",
-      "url": "http://localhost:8080/mcp",
-      "headers": [
-        {
-          "name": "Authorization",
-          "description": "Bearer token for the runeward control plane, if it is configured to require auth.",
           "isRequired": false
         }
       ]

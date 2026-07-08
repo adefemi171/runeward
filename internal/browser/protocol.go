@@ -10,6 +10,7 @@ type Command struct {
 	// Action selects the operation: navigate|eval|text|html|screenshot|
 	// click|type|wait|title|url|close|ping.
 	Action    string `json:"action"`
+	Token     string `json:"token,omitempty"`
 	URL       string `json:"url,omitempty"`
 	Selector  string `json:"selector,omitempty"`
 	Expr      string `json:"expr,omitempty"`       // JS source for action=eval
