@@ -120,6 +120,10 @@ release:
     name: runeward
   draft: false
   prerelease: auto
+  # Re-running a tag (e.g. after fixing a later job) must not fail on assets a
+  # prior partial run already uploaded. Replace same-named assets instead of
+  # erroring with "422 already_exists".
+  replace_existing_artifacts: true
 
 # Homebrew formula -> brew install Runewardd/tap/runeward
 #
