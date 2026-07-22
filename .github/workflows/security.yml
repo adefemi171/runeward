@@ -27,7 +27,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
       - uses: actions/setup-go@v6.5.0
         with:
           go-version: "1.25"
@@ -42,7 +42,7 @@ jobs:
           go run github.com/securego/gosec/v2/cmd/gosec@v2.27.1 \
             -no-fail -fmt sarif -out gosec.sarif ./...
       - name: Upload gosec SARIF
-        uses: github/codeql-action/upload-sarif@v4.36.3
+        uses: github/codeql-action/upload-sarif@v4.37.3
         with:
           sarif_file: gosec.sarif
           category: gosec
@@ -55,7 +55,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
       - uses: actions/setup-go@v6.5.0
         with:
           # Pin to the patch that fixes GO-2026-5856 (crypto/tls); "1.25" resolved
@@ -75,7 +75,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
       - name: Trivy filesystem scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -85,7 +85,7 @@ jobs:
           format: sarif
           output: trivy-fs.sarif
       - name: Upload Trivy fs SARIF
-        uses: github/codeql-action/upload-sarif@v4.36.3
+        uses: github/codeql-action/upload-sarif@v4.37.3
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
@@ -112,7 +112,7 @@ jobs:
           - dockerfile: deploy/Dockerfile.sandbox
             image: runeward-sandbox
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
       - name: Build ${{ matrix.image }} image
         run: |
           docker build -f ${{ matrix.dockerfile }} -t ${{ matrix.image }}:ci .
@@ -125,7 +125,7 @@ jobs:
           format: sarif
           output: trivy-${{ matrix.image }}.sarif
       - name: Upload Trivy image SARIF (${{ matrix.image }})
-        uses: github/codeql-action/upload-sarif@v4.36.3
+        uses: github/codeql-action/upload-sarif@v4.37.3
         with:
           sarif_file: trivy-${{ matrix.image }}.sarif
           category: trivy-image-${{ matrix.image }}

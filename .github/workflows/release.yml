@@ -20,7 +20,7 @@ jobs:
   goreleaser:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
       - uses: actions/setup-go@v6
@@ -51,7 +51,7 @@ jobs:
       DOCKER_BUILD_RECORD_UPLOAD: "false"
       DOCKER_BUILD_SUMMARY: "false"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       # GHCR only accepts lowercase repository paths; the org name is mixed-case.
       - name: Compute lowercase image name
         run: echo "IMAGE=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
@@ -145,7 +145,7 @@ jobs:
     needs: [goreleaser]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: azure/setup-helm@v5
         with:
           version: v3.16.2
